@@ -6,3 +6,6 @@ venv/
 build/
 dist/
 results/
+selftest_out/
+diag/
+.venv-build/

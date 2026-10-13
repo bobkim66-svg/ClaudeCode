@@ -1,0 +1,68 @@
+name: build-windows
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      onefile:
+        description: "단일 exe(--onefile)도 빌드"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: 빌드 + pytest + exe 단독 자체진단 (onedir)
+        shell: pwsh
+        run: ./build.ps1 -Python python
+
+      - name: exe 업로드 (onedir)
+        uses: actions/upload-artifact@v4
+        with:
+          name: polarsim-windows-onedir
+          path: dist/polarsim
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 단일 exe 빌드 (옵션)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.onefile }}
+        shell: pwsh
+        run: ./build.ps1 -Python python -OneFile -SkipTests
+
+      - name: 단일 exe 업로드 (옵션)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.onefile }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: polarsim-windows-onefile
+          path: dist/polarsim.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 자체진단 결과와 로그 수집
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path diag | Out-Null
+          if (Test-Path selftest_out) { Copy-Item selftest_out diag -Recurse }
+          $log = Join-Path $env:LOCALAPPDATA "polarsim\logs"
+          if (Test-Path $log) { Copy-Item $log diag -Recurse }
+
+      - name: 자체진단 결과 업로드 (스크린샷, 보고서, 로그)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: polarsim-selftest
+          path: diag
+          retention-days: 30

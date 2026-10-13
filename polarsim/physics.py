@@ -235,6 +235,14 @@ class AnalyticField:
         p = -self.medium.rho * self.medium.c**2 * div
         return {"u": u, "v": v, "p": p, "grad": grad}
 
+    @staticmethod
+    def frame(phasors: list[Phasors], t: float) -> np.ndarray:
+        """캐시된 페이저로 시각 t [s] 의 변위 (P,3) [m]. 애니메이션용 — 공간 위상을 다시 계산하지 않는다."""
+        u = np.zeros(phasors[0].U.shape)
+        for f in phasors:
+            u += np.real(f.U * np.exp(-1j * f.omega * t))
+        return u
+
     def displacement(self, points: np.ndarray, times: np.ndarray) -> np.ndarray:
         """변위만 필요할 때. (Nt,P,3) [m]."""
         return self.evaluate(points, times)["u"]
