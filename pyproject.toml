@@ -1,0 +1,10 @@
+[project]
+name = "polarsim"
+version = "0.1.0"
+description = "다중 음파 중첩에 의한 입자 운동 편광 시뮬레이터"
+requires-python = ">=3.11"
+dependencies = ["numpy>=2.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
