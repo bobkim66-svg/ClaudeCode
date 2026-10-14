@@ -288,12 +288,20 @@ def pyopengl_follow_qt_software_gl() -> str:
         return "opengl32sw.dll 없음"
     import OpenGL.platform as plat  # 여기서 시스템 opengl32 를 한 번 불러오지만 아래에서 바꿔 끼운다
 
+    from OpenGL.platform import baseplatform
+
     lib = ctypes.WinDLL(str(dll), mode=ctypes.RTLD_GLOBAL)
-    plat.PLATFORM.GL = lib  # lazy_property 는 인스턴스 속성이 있으면 그것을 쓴다
-    plat.PLATFORM.OpenGL = lib
-    plat.GL = lib
-    plat.OpenGL = lib
-    return f"PyOpenGL → {dll}"
+    P = plat.PLATFORM
+    # import 때 install() 이 시스템 opengl32 로 계산해 캐시한 값 (GetCurrentContext, CurrentContextIsValid,
+    # getExtensionProcedure, WGL 등) 을 모두 지우고, 새 라이브러리로 다시 install 한다.
+    for name in list(vars(P)):
+        if isinstance(getattr(type(P), name, None), baseplatform.lazy_property):
+            delattr(P, name)
+    P.GL = lib  # lazy_property 는 인스턴스 속성이 있으면 그것을 쓴다
+    P.OpenGL = lib
+    P.install(vars(plat))
+    ok = plat.GetCurrentContext.__name__ == "wglGetCurrentContext" and P.GL is lib
+    return f"PyOpenGL → {dll} (재설치 {'확인' if ok else '확인 실패'})"
 
 
 def main(argv: list[str] | None = None) -> int:
