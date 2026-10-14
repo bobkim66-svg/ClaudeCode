@@ -57,13 +57,23 @@ Remove-Item Env:\PYTHONPATH, Env:\PYTHONHOME -ErrorAction SilentlyContinue
 try {
     Write-Host "==> exe 자체진단: $cleanExe --selftest $report" -ForegroundColor Cyan
     $proc = Start-Process -FilePath $cleanExe -ArgumentList @("--selftest", "`"$report`"") -PassThru
-    if (-not $proc.WaitForExit(900000)) {  # 15 분: 멈추면 (예: 대화상자) 무한 대기하지 않게
-        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-        throw "exe 자체진단 시간 초과 (15 분). selftest_out 의 hang_traceback.txt 와 로그를 확인하세요."
-    }
+    $timedOut = -not $proc.WaitForExit(900000)  # 15 분: 멈추면 (예: 대화상자) 무한 대기하지 않게
+    if ($timedOut) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
 } finally {
     $env:PATH = $savedPath
 }
+# 진단 근거를 CI 로그에 바로 남긴다 (아티팩트를 받지 않아도 원인 확인 가능)
+$appLog = Join-Path $env:LOCALAPPDATA "polarsim\logs\polarsim.log"
+if (Test-Path $appLog) {
+    Write-Host "---- polarsim.log (마지막 60줄) ----" -ForegroundColor Cyan
+    Get-Content -Path $appLog -Encoding UTF8 -Tail 60 | Write-Host
+}
+$hang = Join-Path $report "hang_traceback.txt"
+if ((Test-Path $hang) -and (Get-Item $hang).Length -gt 0) {
+    Write-Host "---- hang_traceback.txt ----" -ForegroundColor Cyan
+    Get-Content -Path $hang -Encoding UTF8 | Write-Host
+}
+if ($timedOut) { throw "exe 자체진단 시간 초과 (15 분). 위 로그의 마지막 단계에서 멈췄습니다." }
 
 $reportFile = Join-Path $report "selftest_report.txt"
 if (Test-Path $reportFile) {

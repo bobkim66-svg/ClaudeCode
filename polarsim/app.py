@@ -95,7 +95,21 @@ def create_app(argv: list[str]):
 
 
 def run_selftest(out_dir: Path, log_path: Path) -> int:
-    """물리 검증 + GUI 전체 경로 (프리셋 계산, 애니메이션, 저장) 를 실행하고 보고서를 남긴다."""
+    """물리 검증 + GUI 전체 경로 (프리셋 계산, 애니메이션, 저장) 를 실행하고 보고서를 남긴다.
+
+    어떤 예외도 밖으로 내보내지 않는다: --noconsole exe 에서 최상위 예외는 PyInstaller 가 모달 대화상자로 띄워
+    CI 에서 영원히 멈추기 때문. 예외는 로그와 보고서에 남기고 종료 코드 1."""
+    try:
+        return _run_selftest_body(out_dir, log_path)
+    except BaseException:  # 진단 결과로 기록 (삼키는 것이 아니라 보고서에 FAIL 로 남김)
+        text = traceback.format_exc()
+        log.critical("selftest aborted:\n%s", text)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "selftest_report.txt").write_text(f"FAIL  자체진단 중단 (예외)\n{text}", encoding="utf-8")
+        return 1
+
+
+def _run_selftest_body(out_dir: Path, log_path: Path) -> int:
     import numpy as np
 
     from .config import SimConfig, Source
@@ -110,6 +124,7 @@ def run_selftest(out_dir: Path, log_path: Path) -> int:
 
     def check(name, ok, detail=""):
         checks.append((name, bool(ok), detail))
+        log.info("selftest %s: %s %s", "PASS" if ok else "FAIL", name, detail)
 
     # 자체진단은 사람이 없는 CI 에서도 돈다: 처리 안 된 예외로 모달 대화상자가 뜨면 영원히 멈추므로 기록만 한다.
     unhandled: list[str] = []
@@ -141,9 +156,12 @@ def run_selftest(out_dir: Path, log_path: Path) -> int:
         check("OpenGL 3D 모듈 포함", False, f"{type(e).__name__}: {e}")
 
     app = create_app([sys.argv[0]])
+    log.info("selftest: 창 만들기")
     win = MainWindow(resource_path(GUIDE_REL), log_path)
     win.resize(1600, 1000)
+    log.info("selftest: 창 표시")
     win.show()
+    app.processEvents()
     check("도움말 가이드 로드", "찾을 수 없습니다" not in win.help.toPlainText(), str(resource_path(GUIDE_REL)))
     for key in ("standing", "circular", "hex"):
         win.load_preset(key)
@@ -200,17 +218,23 @@ def _selftest_3d(win, app, out_dir: Path, check) -> None:
     import numpy as np
 
     t3 = win.tab3d
+    log.info("selftest 3D: 탭 전환")
     win.tabs.setCurrentWidget(t3)
+    app.processEvents()
+    log.info("selftest 3D: 예시 불러오기")
     t3.load_preset("auv_cw")
     t3.cpw.setValue(8)  # 자체진단 시간 단축
+    log.info("selftest 3D: 계산")
     t3.run_sync()
     t3.timer.stop()
+    log.info("selftest 3D: 재생")
     for _ in range(5):
         t3._tick()
         app.processEvents()
     r = t3.res
     check("[3D] 회전 검증 (float32 반올림 수준)", r.curl_ratio < 1e-4, f"curl={r.curl_ratio:.1e}")
     check("[3D] 연속파 정상상태 도달", r.convergence < 0.02, f"창 차이={r.convergence:.1e}, {r.solve_s:.1f} s")
+    log.info("selftest 3D: 화면 캡처")
     img = t3.view.grab_image()
     renderer = "?"
     try:
