@@ -16,8 +16,10 @@ from .style import (ARROW_COLOR, EQUILIBRIUM_COLOR, SEGMENT_COLOR, SELECT_COLOR,
 _N_COLORS = 64
 
 
-def _nearest_index(su: np.ndarray, sv: np.ndarray, x: float, y: float) -> tuple[int, int]:
+def _nearest_index(su: np.ndarray, sv: np.ndarray, x: float, y: float, mask=None) -> tuple[int, int]:
     d2 = (su - x) ** 2 + (sv - y) ** 2
+    if mask is not None:
+        d2 = np.where(mask, d2, np.inf)
     i, j = np.unravel_index(int(np.argmin(d2)), su.shape)
     return int(i), int(j)
 
@@ -38,13 +40,33 @@ class _ClickablePlot(pg.GraphicsLayoutWidget):
         self.plot = self.addPlot(row=0, col=0)
         self.plot.setAspectLocked(True)
         self._su = self._sv = None
+        self._mask = None  # 클릭/표시 가능한 입자 (None = 전부)
+        self._overlay: list = []
         self.scene().sigMouseClicked.connect(self._on_click)
 
     def _on_click(self, ev) -> None:
         if self._su is None or not self.plot.sceneBoundingRect().contains(ev.scenePos()):
             return
         p = self.plot.vb.mapSceneToView(ev.scenePos())
-        self.particleClicked.emit(*_nearest_index(self._su, self._sv, p.x(), p.y()))
+        self.particleClicked.emit(*_nearest_index(self._su, self._sv, p.x(), p.y(), self._mask))
+
+    def set_overlay(self, rects=(), lines=()) -> None:
+        """강체 직사각형 (x0,x1,y0,y1) [m] 은 진회색으로, 방사면 선분 ((x0,y0),(x1,y1)) 은 주황 굵은 선으로."""
+        for it in self._overlay:
+            self.plot.removeItem(it)
+        self._overlay = []
+        for x0, x1, y0, y1 in rects:
+            r = QtWidgets.QGraphicsRectItem(x0, y0, x1 - x0, y1 - y0)
+            r.setBrush(pg.mkBrush(90, 90, 90, 255))
+            r.setPen(pg.mkPen(None))
+            r.setZValue(20)
+            self.plot.addItem(r)
+            self._overlay.append(r)
+        for (xa, ya), (xb, yb) in lines:
+            ln = pg.PlotDataItem([xa, xb], [ya, yb], pen=pg.mkPen((240, 140, 20), width=4))
+            ln.setZValue(21)
+            self.plot.addItem(ln)
+            self._overlay.append(ln)
 
 
 class PlaneView(_ClickablePlot):
@@ -62,27 +84,33 @@ class PlaneView(_ClickablePlot):
         self._brushes = [pg.mkBrush(*c) for c in diverging_lut(_N_COLORS)]
         self._sel = (0, 0)
 
-    def set_grid(self, su: np.ndarray, sv: np.ndarray) -> None:
-        self._su, self._sv = su, sv
-        self.eq.setData(su.ravel(), sv.ravel())
+    def set_grid(self, su: np.ndarray, sv: np.ndarray, mask: np.ndarray | None = None) -> None:
+        """mask (nx,ny) bool: 표시할 입자 (강체 안 입자 제외용). None = 전부."""
+        self._su, self._sv, self._mask = su, sv, mask
+        m = np.ones(su.shape, bool) if mask is None else mask
+        self.eq.setData(su[m], sv[m])
         self.plot.enableAutoRange()
 
     def set_selected(self, i: int, j: int) -> None:
         self._sel = (i, j)
 
-    def set_frame(self, du, dv, dn, gain: float, n_scale: float, n_particles: int) -> None:
-        """du, dv, dn (nx,ny) [m]: 평면 기저 성분의 실제 변위. gain: 시각 배율. n_scale: 색 범위 [m]."""
+    def set_frame(self, du, dv, dn, gain: float, n_scale: float, n_particles: int,
+                  color_label: str = "평면 밖 변위", color_unit: str = "m") -> None:
+        """du, dv (nx,ny) [m]: 평면 기저 성분의 실제 변위. gain: 시각 배율.
+        dn (nx,ny): 점 색으로 표시할 양 (기본 평면 밖 변위 [m]), n_scale: 색 범위 (±)."""
+        m = np.ones(du.shape, bool) if self._mask is None else self._mask
         x = self._su + gain * du
         y = self._sv + gain * dv
-        self.seg.setData(_pairs(self._su, x), _pairs(self._sv, y))
-        level = np.clip((dn.ravel() / n_scale + 1.0) / 2.0, 0.0, 1.0) if n_scale > 0 else np.full(dn.size, 0.5)
+        self.seg.setData(_pairs(self._su[m], x[m]), _pairs(self._sv[m], y[m]))
+        c = dn[m]
+        level = np.clip((c / n_scale + 1.0) / 2.0, 0.0, 1.0) if n_scale > 0 else np.full(c.size, 0.5)
         idx = (level * (_N_COLORS - 1)).astype(int)
-        self.dots.setData(x.ravel(), y.ravel(), brush=[self._brushes[k] for k in idx])
+        self.dots.setData(x[m], y[m], brush=[self._brushes[k] for k in idx])
         i, j = self._sel
         self.sel.setData([x[i, j]], [y[i, j]])
         self.plot.setTitle(
             f"입자 변위 (시각 배율 ×{gain:.3g}) · n = {n_particles}<br>"
-            f"점 색 = 평면 밖 변위: 파랑 −, 회색 0, 빨강 + (±{n_scale:.2g} m)", size="9pt")
+            f"점 색 = {color_label}: 파랑 −, 회색 0, 빨강 + (±{n_scale:.2g} {color_unit})", size="9pt")
 
 
 class MetricMap(_ClickablePlot):
@@ -146,10 +174,10 @@ class MetricMap(_ClickablePlot):
 class TrajectoryView(QtWidgets.QWidget):
     """선택 입자의 실제 변위 궤적 (배율 없음) 을 평면 기저 성분 세 투영으로 표시."""
 
-    PROJECTIONS = ((0, 1, "u", "v"), (0, 2, "u", "n"), (1, 2, "v", "n"))
-
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, axis_names: tuple[str, str, str] = ("u", "v", "n")):
         super().__init__(parent)
+        a0, a1, a2 = axis_names
+        self.PROJECTIONS = ((0, 1, a0, a1), (0, 2, a0, a2), (1, 2, a1, a2))
         self.glw = pg.GraphicsLayoutWidget()
         self.curves, self.dots, self.plots = [], [], []
         for col, (a, b, la, lb) in enumerate(self.PROJECTIONS):

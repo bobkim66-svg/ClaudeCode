@@ -116,6 +116,11 @@ def trajectory_metrics(u: np.ndarray, a_ref: float, settings: MetricSettings) ->
     """
     du = u - u.mean(axis=0, keepdims=True)
     cov = np.einsum("tpi,tpj->pij", du, du) / u.shape[0]
+    return covariance_metrics(cov, a_ref, settings)
+
+
+def covariance_metrics(cov: np.ndarray, a_ref: float, settings: MetricSettings) -> dict:
+    """궤적 공분산 cov (P,3,3) [m²] → 지표 (trajectory_metrics 와 phasor_metrics 공용)."""
     w, vec = np.linalg.eigh(cov)  # 오름차순
     w = np.clip(w[:, ::-1], 0.0, None)  # 반올림 오차로 생긴 −0 근처 값 제거
     vec = vec[:, :, ::-1]
@@ -134,6 +139,28 @@ def trajectory_metrics(u: np.ndarray, a_ref: float, settings: MetricSettings) ->
         "planarity": planarity,
         "node": node,
     }
+
+
+def phasor_metrics(U: np.ndarray, P: np.ndarray, V: np.ndarray, a_ref: float, i_ref: float,
+                   settings: MetricSettings) -> dict:
+    """단일 주파수 정상상태 페이저 → 지표 (엔진 B 용). 시간 표본 없이 정확한 주기 평균.
+
+    u(t) = Re(U e^{−iωt}) 이면 ⟨u_i u_j⟩ = ½ Re(U_i U_j*), ⟨p v⟩ = ½ Re(P V*), ⟨(u·Î)²⟩ = ½ |U·Î|².
+    U, V (P,3) complex [m], [m/s]; P (P,) complex [Pa].
+    반환: trajectory_metrics 의 키 + intensity (P,3), T (P,), rms (P,).
+    """
+    cov = 0.5 * np.real(U[:, :, None] * U.conj()[:, None, :])
+    out = covariance_metrics(cov, a_ref, settings)
+    I = 0.5 * np.real(P[:, None] * V.conj())
+    norm = np.linalg.norm(I, axis=1)
+    ihat = np.divide(I, norm[:, None], out=np.zeros_like(I), where=norm[:, None] > 0)
+    u2 = 0.5 * np.sum(np.abs(U) ** 2, axis=1)
+    upar2 = 0.5 * np.abs(np.einsum("pi,pi->p", U, ihat)) ** 2
+    valid = (~out["node"]) & (norm >= settings.intensity_tol * i_ref)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        T = np.clip((u2 - upar2) / u2, 0.0, 1.0)
+    out.update(intensity=I, T=np.where(valid, T, np.nan), rms=np.sqrt(u2))
+    return out
 
 
 def intensity(p: np.ndarray, v: np.ndarray) -> np.ndarray:

@@ -145,7 +145,24 @@ def run_selftest(out_dir: Path, log_path: Path) -> int:
         files = sorted(p.name for p in saved.iterdir())
         check(f"[{key}] 결과 저장", len(files) == 6, ", ".join(files))
         win.grab().save(str(out_dir / f"screenshot_{key}.png"))
+    # 엔진 B: AUV 품 방사 (기본 형상)
     win.tabs.setCurrentIndex(1)
+    wt = win.wave_tab
+    wt.run_sync()
+    for _ in range(5):
+        wt._tick()
+        app.processEvents()
+    b = wt.bundle
+    check("[엔진 B] 회전 검증 (구조적 0)", b.res.curl_ratio < 1e-10, f"curl={b.res.curl_ratio:.1e}")
+    ratio = b.power_out / b.power_in if b.power_out else float("nan")
+    check("[엔진 B] 에너지 보존 (방사 일률 = 유출 세기)", abs(ratio - 1) < 0.03, f"ratio={ratio:.4f}")
+    e_far = [r["e_energy"] for r in b.radial if r["n"] > 0 and r["coverage"] > 0.95]  # 영역이 다 덮는 구간만
+    check("[엔진 B] 품 밖 타원도가 거리에 따라 감소", len(e_far) >= 3 and e_far[-1] < e_far[1],
+          ", ".join(f"{v:.3f}" for v in e_far))
+    saved = wt.export_to(out_dir)
+    check("[엔진 B] 결과 저장", len(list(saved.iterdir())) == 6, ", ".join(sorted(p.name for p in saved.iterdir())))
+    win.grab().save(str(out_dir / "screenshot_engineB.png"))
+    win.tabs.setCurrentIndex(2)
     app.processEvents()
     win.grab().save(str(out_dir / "screenshot_help.png"))
     win.close()

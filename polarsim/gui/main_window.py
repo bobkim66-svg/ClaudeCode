@@ -19,6 +19,7 @@ from ..physics import AnalyticField, Phasors, plane_basis
 from ..presets import orthogonal_quadrature, standing_wave, three_wave_hex
 from .source_table import SourceTable
 from .views import MetricMap, PlaneView, TrajectoryView, open_3d_view
+from .wave_tab import WaveTab
 
 log = logging.getLogger(__name__)
 
@@ -137,22 +138,24 @@ class MainWindow(QtWidgets.QMainWindow):
         sim_page.addWidget(bottom)
         sim_page.setSizes([600, 380])
 
-        self.tabs = QtWidgets.QTabWidget()
-        self.tabs.addTab(sim_page, "시뮬레이션")
-        self.help = QtWidgets.QTextBrowser()
-        self.help.setOpenExternalLinks(True)
-        self.tabs.addTab(self.help, "도움말")
-        self._load_guide(guide_path)
-
         scroll = QtWidgets.QScrollArea()
         scroll.setWidget(self.controls)
         scroll.setWidgetResizable(True)
         scroll.setMinimumWidth(460)
-        split = QtWidgets.QSplitter()
-        split.addWidget(scroll)
-        split.addWidget(self.tabs)
-        split.setSizes([500, 1100])
-        self.setCentralWidget(split)
+        engine_a = QtWidgets.QSplitter()
+        engine_a.addWidget(scroll)
+        engine_a.addWidget(sim_page)
+        engine_a.setSizes([500, 1100])
+
+        self.wave_tab = WaveTab(log_path)
+        self.help = QtWidgets.QTextBrowser()
+        self.help.setOpenExternalLinks(True)
+        self._load_guide(guide_path)
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.addTab(engine_a, "엔진 A: 평면파 중첩")
+        self.tabs.addTab(self.wave_tab, "엔진 B: AUV 품 방사 (벽·회절)")
+        self.tabs.addTab(self.help, "도움말")
+        self.setCentralWidget(self.tabs)
         self.statusBar().showMessage("프리셋을 불러오거나 소스를 편집한 뒤 [계산 실행] 을 누르세요.")
 
         self.timer = QtCore.QTimer(self)
@@ -563,5 +566,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, ev: QtGui.QCloseEvent) -> None:
         self.timer.stop()
+        self.wave_tab.shutdown()
         self._executor.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(ev)
