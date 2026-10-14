@@ -352,3 +352,30 @@ def test_tab3d_export(window, tmp_path):
     assert {"config.json", "summary.html", "particles.csv"} <= names  # view3d.png 는 OpenGL 있을 때만
     rows = (out / "particles.csv").read_text(encoding="utf-8").splitlines()
     assert len(rows) == 1 + len(t3.res.lat_pos)
+
+
+def test_view3d_survives_opengl_failure(qapp, tmp_path, monkeypatch):
+    """OpenGL 이 없는 PC: 그리기 오류가 예외(오류 창)로 번지지 않고, 안내 문구 + 다음 실행용 소프트웨어 GL 표시."""
+    import sys
+
+    import pyqtgraph.opengl as gl
+
+    from polarsim.gui import view3d
+
+    errors = []
+    monkeypatch.setattr(sys, "excepthook", lambda *a: errors.append(a))
+    monkeypatch.setattr(view3d, "software_gl_flag", lambda: tmp_path / "use_software_gl")
+    monkeypatch.delenv("QT_OPENGL", raising=False)
+
+    def broken(self, *a, **kw):
+        raise RuntimeError("GLError 1282 invalid operation (모의)")
+
+    monkeypatch.setattr(gl.GLViewWidget, "paintGL", broken)
+    v = view3d.View3D()
+    v.view.paintGL()
+    v.view.paintGL()  # 두 번째부터는 그리지 않음 (매 프레임 예외 없음)
+    qapp.processEvents()
+    assert v.view.gl_error.startswith("RuntimeError") and errors == []
+    assert v.stack.currentWidget() is v.gl_message and "다시 시작" in v.gl_message.text()
+    assert (tmp_path / "use_software_gl").exists()
+    assert v.grab_image().isNull()

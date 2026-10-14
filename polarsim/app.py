@@ -245,6 +245,8 @@ def _selftest_3d(win, app, out_dir: Path, check) -> None:
             (GL.glGetString(GL.GL_VERSION) or b"?").decode(errors="replace")
     except Exception as e:  # 진단 정보일 뿐 — 실패 판정은 아래 픽셀 검사로 한다
         renderer = f"조회 실패: {type(e).__name__}"
+    if t3.view.view.gl_error:
+        renderer = f"OpenGL 실패: {t3.view.view.gl_error}"
     drawn = 0.0
     if not img.isNull():
         from .gui.view3d import BG
@@ -255,7 +257,8 @@ def _selftest_3d(win, app, out_dir: Path, check) -> None:
     bundle = Path(getattr(sys, "_MEIPASS", ""))
     sw = sorted(str(p.relative_to(bundle)) for p in bundle.rglob("opengl32sw.dll")) if bundle.name else []
     check("[3D] 3D 화면 렌더링 (OpenGL)", drawn > 0.05,
-          f"그려진 픽셀 {drawn:.0%}, {renderer}, 소프트웨어 GL: {sw or '없음/소스 실행'}")
+          f"그려진 픽셀 {drawn:.0%}, {renderer}, QT_OPENGL={os.environ.get('QT_OPENGL', '(기본)')}, "
+          f"소프트웨어 GL DLL: {sw or '없음/소스 실행'}")
     saved = t3.export_to(out_dir)
     names = sorted(p.name for p in saved.iterdir())
     check("[3D] 결과 저장", {"config.json", "summary.html", "particles.csv", "view3d.png"} <= set(names),
@@ -270,11 +273,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--software-gl", action="store_true",
                         help="3D 화면을 소프트웨어 OpenGL 로 그림 (원격 데스크톱 등에서 3D 화면이 비거나 검을 때)")
     args = parser.parse_args(argv)
-    if args.software_gl:
+    flag = log_dir().parent / "use_software_gl"  # 3D 화면 OpenGL 실패 시 자동으로 생기는 표시 (gui/view3d.py)
+    if args.software_gl or flag.exists():
         os.environ["QT_OPENGL"] = "software"  # QApplication 만들기 전에 정해야 함
     log_path = setup_logging()
     install_excepthook(log_path)
-    log.info("start %s, python %s, frozen=%s", APP_NAME, sys.version.split()[0], getattr(sys, "frozen", False))
+    log.info("start %s, python %s, frozen=%s, QT_OPENGL=%s", APP_NAME, sys.version.split()[0],
+             getattr(sys, "frozen", False), os.environ.get("QT_OPENGL", "(기본)"))
     if args.selftest:
         return run_selftest(args.selftest, log_path)
 

@@ -6,6 +6,11 @@
 
 from __future__ import annotations
 
+import html
+import logging
+import os
+from pathlib import Path
+
 import numpy as np
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
@@ -14,6 +19,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 BG = (247, 248, 250)
 BODY_RGBA = (0.62, 0.64, 0.68, 1.0)
 TRANSDUCER_RGBA = (0.95, 0.55, 0.10, 1.0)
+log = logging.getLogger(__name__)
 GRID_RGBA = (0, 0, 0, 40)
 BOX_RGBA = (0.35, 0.35, 0.40, 1.0)
 
@@ -136,12 +142,55 @@ class ColorBar(QtWidgets.QWidget):
         p.end()
 
 
+class SafeGLView(gl.GLViewWidget):
+    """OpenGL 이 없거나 부족한 PC (원격 데스크톱, 가상머신) 에서 그리기 오류가 매 프레임 예외(=오류 창) 로
+    번지지 않게 한다. 첫 실패를 기록하고 더는 그리지 않으며, glFailed 신호로 알린다."""
+
+    glFailed = QtCore.Signal(str)
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.gl_error: str | None = None
+
+    def _fail(self, e: Exception) -> None:
+        if self.gl_error is None:
+            self.gl_error = f"{type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}"
+            log.error("3D 화면 OpenGL 오류: %s", self.gl_error, exc_info=True)
+            QtCore.QTimer.singleShot(0, lambda: self.glFailed.emit(self.gl_error))  # 그리기 도중에 위젯을 바꾸지 않게
+
+    def initializeGL(self) -> None:
+        try:
+            super().initializeGL()
+        except Exception as e:  # 오류는 기록·안내 (그리기만 포기, 계산은 계속 가능)
+            self._fail(e)
+
+    def paintGL(self, *a, **kw) -> None:
+        if self.gl_error is not None:
+            return
+        try:
+            super().paintGL(*a, **kw)
+        except Exception as e:
+            self._fail(e)
+
+
+def software_gl_flag() -> Path:
+    """이 파일이 있으면 다음 실행부터 소프트웨어 OpenGL 을 쓴다 (app.main 에서 확인)."""
+    from ..app import log_dir
+
+    return log_dir().parent / "use_software_gl"
+
+
 class View3D(QtWidgets.QWidget):
     """GLViewWidget + 시점 단추 + 색 막대."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.view = gl.GLViewWidget()
+        self.view = SafeGLView()
+        self.view.glFailed.connect(self._on_gl_failed)
+        self.gl_message = QtWidgets.QLabel()
+        self.gl_message.setWordWrap(True)
+        self.gl_message.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.gl_message.setStyleSheet("background:#fff3e0; color:#7a4100; padding:24px; font-size:11pt")
         self.view.setBackgroundColor(BG)
         self.view.setMinimumSize(400, 300)
         self.cbar = ColorBar()
@@ -154,9 +203,12 @@ class View3D(QtWidgets.QWidget):
         bar.addStretch(1)
         hint = QtWidgets.QLabel("<small>왼쪽 드래그 = 회전 · 휠 = 확대 · 가운데 드래그(Ctrl+왼쪽) = 이동</small>")
         bar.addWidget(hint)
+        self.stack = QtWidgets.QStackedWidget()
+        self.stack.addWidget(self.view)
+        self.stack.addWidget(self.gl_message)
         row = QtWidgets.QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(self.view, 1)
+        row.addWidget(self.stack, 1)
         row.addWidget(self.cbar)
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -170,6 +222,24 @@ class View3D(QtWidgets.QWidget):
         self.particles.setVisible(False)
         self.view.addItem(self.particles)
         self.domain = (-1.0, 1.0, -1.0, 1.0, -1.0, 1.0)
+
+    def _on_gl_failed(self, err: str) -> None:
+        software = os.environ.get("QT_OPENGL") == "software"
+        if software:
+            text = ("<b>3D 화면을 그릴 수 없습니다</b> (소프트웨어 OpenGL 에서도 실패).<br>"
+                    f"<small>{html.escape(err)}</small><br><br>계산·결과 저장은 그대로 됩니다. 로그 파일을 확인해 주세요.")
+        else:
+            try:
+                software_gl_flag().parent.mkdir(parents=True, exist_ok=True)
+                software_gl_flag().write_text("3D 화면 OpenGL 오류로 자동 설정됨\n" + err, encoding="utf-8")
+                note = "<b>프로그램을 다시 시작하면 소프트웨어 OpenGL 로 자동 전환</b>되어 3D 화면이 보입니다 (조금 느림)."
+            except OSError:
+                note = "PowerShell 에서 <code>polarsim.exe --software-gl</code> 로 실행해 보세요."
+            text = ("<b>이 PC 의 그래픽 드라이버로는 3D 화면(OpenGL 2.0)을 그릴 수 없습니다</b><br>"
+                    "(원격 데스크톱, 가상머신, 오래된 드라이버에서 흔함)<br>"
+                    f"<small>{html.escape(err)}</small><br><br>{note}<br>계산·결과 저장은 지금도 그대로 됩니다.")
+        self.gl_message.setText(text)
+        self.stack.setCurrentWidget(self.gl_message)
 
     # ------------------------------------------------------------------ 장면
     def set_scene(self, domain, bodies, transducers, arrows=()) -> None:
@@ -274,5 +344,7 @@ class View3D(QtWidgets.QWidget):
         self.view.setCameraPosition(pos=c, distance=1.6 * s)
 
     def grab_image(self) -> QtGui.QImage:
-        """현재 3D 화면 (색 막대 제외). OpenGL 컨텍스트가 없으면 빈 이미지."""
+        """현재 3D 화면 (색 막대 제외). OpenGL 이 없거나 실패했으면 빈 이미지."""
+        if self.view.gl_error is not None:
+            return QtGui.QImage()
         return self.view.grabFramebuffer()

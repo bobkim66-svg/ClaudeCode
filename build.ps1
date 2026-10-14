@@ -56,7 +56,9 @@ $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
 Remove-Item Env:\PYTHONPATH, Env:\PYTHONHOME -ErrorAction SilentlyContinue
 try {
     Write-Host "==> exe 자체진단: $cleanExe --selftest $report" -ForegroundColor Cyan
-    $proc = Start-Process -FilePath $cleanExe -ArgumentList @("--selftest", "`"$report`"") -PassThru
+    # CI 러너(GPU 없음)는 OpenGL 2.0 이 없어 기본 GL 로는 3D 화면을 그릴 수 없다 (실측: glClearColor GLError 1282).
+    # 그래서 GPU 없는 PC 용 대체 경로인 소프트웨어 OpenGL 로 3D 렌더링을 검증한다.
+    $proc = Start-Process -FilePath $cleanExe -ArgumentList @("--selftest", "`"$report`"", "--software-gl") -PassThru
     $timedOut = -not $proc.WaitForExit(900000)  # 15 분: 멈추면 (예: 대화상자) 무한 대기하지 않게
     if ($timedOut) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
 } finally {
