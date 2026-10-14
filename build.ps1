@@ -56,7 +56,11 @@ $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
 Remove-Item Env:\PYTHONPATH, Env:\PYTHONHOME -ErrorAction SilentlyContinue
 try {
     Write-Host "==> exe 자체진단: $cleanExe --selftest $report" -ForegroundColor Cyan
-    $proc = Start-Process -FilePath $cleanExe -ArgumentList @("--selftest", "`"$report`"") -Wait -PassThru
+    $proc = Start-Process -FilePath $cleanExe -ArgumentList @("--selftest", "`"$report`"") -PassThru
+    if (-not $proc.WaitForExit(900000)) {  # 15 분: 멈추면 (예: 대화상자) 무한 대기하지 않게
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        throw "exe 자체진단 시간 초과 (15 분). selftest_out 의 hang_traceback.txt 와 로그를 확인하세요."
+    }
 } finally {
     $env:PATH = $savedPath
 }

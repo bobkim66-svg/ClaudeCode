@@ -103,11 +103,26 @@ def run_selftest(out_dir: Path, log_path: Path) -> int:
     from .metrics import simulate_points
     from .presets import PRESETS
 
+    import faulthandler
+
     out_dir.mkdir(parents=True, exist_ok=True)
     checks: list[tuple[str, bool, str]] = []
 
     def check(name, ok, detail=""):
         checks.append((name, bool(ok), detail))
+
+    # 자체진단은 사람이 없는 CI 에서도 돈다: 처리 안 된 예외로 모달 대화상자가 뜨면 영원히 멈추므로 기록만 한다.
+    unhandled: list[str] = []
+
+    def record(exc_type, exc, tb):
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        log.error("selftest unhandled exception:\n%s", text)
+        unhandled.append(f"{exc_type.__name__}: {exc}")
+
+    sys.excepthook = record
+    threading.excepthook = lambda a: record(a.exc_type, a.exc_value, a.exc_traceback)
+    hang_file = (out_dir / "hang_traceback.txt").open("w", encoding="utf-8")
+    faulthandler.dump_traceback_later(600, exit=True, file=hang_file)  # 10 분 넘게 멈추면 스택을 남기고 종료
 
     lam = 343.0 / 1000.0
     r = simulate_points(SimConfig(sources=(Source(direction=(1, 2, 3)),)), np.zeros((1, 3)))
@@ -169,6 +184,9 @@ def run_selftest(out_dir: Path, log_path: Path) -> int:
     win.grab().save(str(out_dir / "screenshot_help.png"))
     win.close()
 
+    faulthandler.cancel_dump_traceback_later()
+    hang_file.close()
+    check("처리되지 않은 예외 없음", not unhandled, "; ".join(unhandled[:3]))
     lines = [f"{'PASS' if ok else 'FAIL'}  {name}  {detail}" for name, ok, detail in checks]
     n_fail = sum(not ok for _, ok, _ in checks)
     lines.append(f"결과: {len(checks) - n_fail}/{len(checks)} 통과, 로그 {log_path}")

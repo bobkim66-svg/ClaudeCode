@@ -8,3 +8,4 @@ dependencies = ["numpy>=2.0", "scipy>=1.14"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+faulthandler_timeout = 300  # 멈춘 테스트는 스택을 출력 (CI 에서 원인 확인용)
