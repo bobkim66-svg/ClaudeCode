@@ -266,6 +266,36 @@ def _selftest_3d(win, app, out_dir: Path, check) -> None:
     win.grab().save(str(out_dir / "screenshot_3d.png"))
 
 
+def pyopengl_follow_qt_software_gl() -> str:
+    """QT_OPENGL=software 일 때 PyOpenGL 도 Qt 와 같은 소프트웨어 GL (opengl32sw.dll) 을 쓰게 한다 (Windows).
+
+    PyOpenGL 은 이름으로 시스템 opengl32.dll 을 불러오는데, Qt 의 소프트웨어 모드는 opengl32sw.dll (Mesa) 에서
+    컨텍스트를 만든다. 둘이 다르면 pyqtgraph 의 GL 호출이 '현재 컨텍스트 없음' (GLError 1282) 이 된다 (CI 실측).
+    OpenGL.GL 을 import 하기 전에 불러야 한다 (GL 함수 객체가 그때 라이브러리에 묶임). 반환: 상태 설명 (로그용)."""
+    if sys.platform != "win32" or os.environ.get("QT_OPENGL") != "software":
+        return "해당 없음"
+    if "OpenGL.GL" in sys.modules:
+        return "늦음: OpenGL.GL 이 이미 import 됨"
+    import ctypes
+
+    import PySide6
+
+    candidates = [Path(PySide6.__file__).resolve().parent / "opengl32sw.dll"]
+    if hasattr(sys, "_MEIPASS"):
+        candidates += sorted(Path(sys._MEIPASS).rglob("opengl32sw.dll"))
+    dll = next((c for c in candidates if c.is_file()), None)
+    if dll is None:
+        return "opengl32sw.dll 없음"
+    import OpenGL.platform as plat  # 여기서 시스템 opengl32 를 한 번 불러오지만 아래에서 바꿔 끼운다
+
+    lib = ctypes.WinDLL(str(dll), mode=ctypes.RTLD_GLOBAL)
+    plat.PLATFORM.GL = lib  # lazy_property 는 인스턴스 속성이 있으면 그것을 쓴다
+    plat.PLATFORM.OpenGL = lib
+    plat.GL = lib
+    plat.OpenGL = lib
+    return f"PyOpenGL → {dll}"
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     parser = argparse.ArgumentParser(prog=APP_NAME)
@@ -280,6 +310,10 @@ def main(argv: list[str] | None = None) -> int:
     install_excepthook(log_path)
     log.info("start %s, python %s, frozen=%s, QT_OPENGL=%s", APP_NAME, sys.version.split()[0],
              getattr(sys, "frozen", False), os.environ.get("QT_OPENGL", "(기본)"))
+    try:
+        log.info("software GL: %s", pyopengl_follow_qt_software_gl())
+    except Exception:  # 실패해도 앱은 뜬다 (3D 화면은 안내문으로 대체됨)
+        log.exception("PyOpenGL 소프트웨어 GL 전환 실패")
     if args.selftest:
         return run_selftest(args.selftest, log_path)
 
