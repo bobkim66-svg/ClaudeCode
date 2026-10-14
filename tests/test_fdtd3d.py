@@ -214,3 +214,42 @@ def test_stl_binary_scale_offset_and_open_mesh(tmp_path):
     assert np.array_equal(got, ref)
     m, odd = voxelize(tris[:-1].astype(float) * 0.01, xs, ys, zs)  # 삼각형 하나 뺀 열린 메시
     assert odd > 0
+
+
+# ---- 설정 파일·예시 ------------------------------------------------------------------
+def test_json_roundtrip_with_relative_stl(tmp_path):
+    from polarsim.engine3d.config3d import from_dict, presets, to_dict
+
+    stl = tmp_path / "parts" / "hull.stl"
+    stl.parent.mkdir()
+    v, f = box_mesh((0.4, 0.2, 0.2))
+    write_stl_ascii(stl, v[f])
+    cfg = presets()["seabed_ping"].config
+    cfg = Sim3DConfig(**{**cfg.__dict__, "bodies": cfg.bodies + (Body("stl", (0.3, 0, 0), (1.0, 0, 0), path=str(stl)),)})
+    d = to_dict(cfg, base_dir=tmp_path)
+    assert d["bodies"][-1]["path"] == "parts/hull.stl"  # 폴더째 옮겨도 열리게 상대경로
+    moved = tmp_path / "moved"
+    (moved / "parts").mkdir(parents=True)
+    (moved / "parts" / "hull.stl").write_bytes(stl.read_bytes())
+    back = from_dict(d, base_dir=moved)
+    assert back.bodies[-1].path == str((moved / "parts" / "hull.stl").resolve())
+    assert back.signal == cfg.signal and back.transducers == cfg.transducers and back.domain == cfg.domain
+    with pytest.raises(ConfigError, match="형식"):
+        from_dict({"transducers": [{"center": "abc"}]})
+
+
+def test_presets_valid_and_array_steering():
+    """모든 예시가 격자화되고, 4소자 배열 (위상차 +90°, 간격 λ/2) 빔이 +y 쪽 약 30° (= asin(Δφ/(kd))) 로 꺾인다."""
+    from polarsim.engine3d.config3d import presets
+
+    for p in presets().values():
+        setup_grid(p.config)
+    cfg = presets()["array_steer"].config
+    r = run(cfg)
+    X, Y, Z = np.meshgrid(r.xc, r.yc, r.zc, indexing="ij")
+    d = np.stack([X + 0.6, Y, Z], -1)
+    rr = np.linalg.norm(d, axis=-1)
+    ring = (rr > 1.2) & (rr < 1.4) & (np.abs(Z) < 0.05)
+    k = np.argmax(np.where(ring, np.abs(r.P), 0))
+    ang = math.degrees(math.atan2(d.reshape(-1, 3)[k][1], d.reshape(-1, 3)[k][0]))
+    assert ang == pytest.approx(30.0, abs=6.0)  # 소자 4개 + 근거리 (r ≈ 4λ) 라 이론값과 조금 다름

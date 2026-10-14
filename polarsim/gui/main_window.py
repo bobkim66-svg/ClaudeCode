@@ -20,6 +20,7 @@ from ..physics import AnalyticField, Phasors, plane_basis
 from ..presets import orthogonal_quadrature, standing_wave, three_wave_hex
 from .source_table import SourceTable
 from .views import MetricMap, PlaneView, TrajectoryView, open_3d_view
+from .tab3d import Tab3D
 from .wave_tab import WaveTab
 
 log = logging.getLogger(__name__)
@@ -161,10 +162,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.help.setOpenExternalLinks(True)
         self._load_guide(guide_path)
         self.tabs = QtWidgets.QTabWidget()
+        self.tab3d = Tab3D(log_path)
+        self.tabs.addTab(self.tab3d, "3D 소나 (CAD 뷰)")
         self.tabs.addTab(engine_a, "엔진 A: 평면파 중첩")
         self.tabs.addTab(self.wave_tab, "엔진 B: 로봇 프레임 방사 (벽·회절)")
         self.tabs.addTab(self.help, "도움말")
         self.setCentralWidget(self.tabs)
+        self.tabs.currentChanged.connect(lambda _i: self.statusBar().clearMessage())  # 다른 탭의 안내가 남지 않게
         self.statusBar().showMessage("프리셋을 불러오거나 소스를 편집한 뒤 [계산 실행] 을 누르세요.")
 
         self.timer = QtCore.QTimer(self)
@@ -601,5 +605,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, ev: QtGui.QCloseEvent) -> None:
         self.timer.stop()
         self.wave_tab.shutdown()
+        self.tab3d.shutdown()
         self._executor.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(ev)

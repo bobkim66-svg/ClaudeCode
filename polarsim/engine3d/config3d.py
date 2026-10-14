@@ -254,3 +254,121 @@ class Sim3DConfig:
                 raise ConfigError(f"{t.name or f'송신기 {i + 1}'}: 중심이 계산 영역 밖입니다.")
         if not any(t.enabled and t.amplitude > 0 for t in self.transducers):
             raise ConfigError("켜진 송신기가 없습니다.")
+
+
+# ---------------------------------------------------------------------------
+# JSON (저장·불러오기). STL 경로는 JSON 파일 기준 상대경로로 저장해 폴더째 옮겨도 열리게 한다.
+# ---------------------------------------------------------------------------
+JSON_VERSION = 1
+
+
+def to_dict(cfg: Sim3DConfig, base_dir=None) -> dict:
+    from dataclasses import asdict
+    from pathlib import Path
+
+    def rel(path: str) -> str:
+        if not path or base_dir is None:
+            return path
+        try:
+            return Path(path).resolve().relative_to(Path(base_dir).resolve()).as_posix()
+        except ValueError:
+            return Path(path).resolve().as_posix()
+
+    bodies = []
+    for b in cfg.bodies:
+        d = asdict(b)
+        d["path"] = rel(b.path)
+        bodies.append(d)
+    return {
+        "version": JSON_VERSION,
+        "medium": {"c": cfg.medium.c, "rho": cfg.medium.rho},
+        "signal": asdict(cfg.signal),
+        "domain": list(cfg.domain),
+        "cells_per_wavelength": cfg.cells_per_wavelength,
+        "pml_sides": list(cfg.pml_sides),
+        "bodies": bodies,
+        "transducers": [asdict(t) for t in cfg.transducers],
+    }
+
+
+def from_dict(d: dict, base_dir=None) -> Sim3DConfig:
+    """to_dict 의 역. 모르는 키는 무시하고, 빠진 키는 기본값."""
+    from pathlib import Path
+
+    def pick(cls, src: dict):
+        names = cls.__dataclass_fields__
+        kw = {k: v for k, v in src.items() if k in names}
+        for k in ("center", "size"):
+            if k in kw:
+                kw[k] = tuple(float(x) for x in kw[k])
+        return cls(**kw)
+
+    try:
+        bodies = []
+        for bd in d.get("bodies", []):
+            b = pick(Body, bd)
+            if b.path and base_dir is not None and not Path(b.path).is_absolute():
+                b = Body(**{**b.__dict__, "path": str((Path(base_dir) / b.path).resolve())})
+            bodies.append(b)
+        med = d.get("medium", {})
+        return Sim3DConfig(
+            medium=Medium(c=float(med.get("c", WATER.c)), rho=float(med.get("rho", WATER.rho))),
+            signal=pick(Signal, d.get("signal", {})),
+            domain=tuple(float(x) for x in d.get("domain", Sim3DConfig.domain)),
+            cells_per_wavelength=float(d.get("cells_per_wavelength", 10.0)),
+            pml_sides=tuple(bool(x) for x in d.get("pml_sides", (True,) * 6)),
+            bodies=tuple(bodies),
+            transducers=tuple(pick(Transducer, t) for t in d.get("transducers", [])),
+        )
+    except (TypeError, ValueError, KeyError) as e:
+        raise ConfigError(f"설정 파일 형식이 잘못되었습니다: {e}") from None
+
+
+# ---------------------------------------------------------------------------
+# 예시 장면
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Preset3D:
+    title: str
+    note: str
+    config: Sim3DConfig
+
+
+def presets() -> dict[str, Preset3D]:
+    """모두 물 (c = 1500 m/s), 5 kHz (λ = 0.3 m) 기준."""
+    auv = (Body("cylinder", (-0.3, 0.0, 0.0), (1.6, 0.3, 0.0), name="AUV 몸체 (길이 1.6 m, 지름 0.3 m)"),
+           Body("sphere", (0.5, 0.0, 0.0), (0.3, 0.0, 0.0), name="AUV 머리 (반구)"))
+    sonar_front = Transducer(center=(0.68, 0.0, 0.0), diameter=0.2, thickness=0.06, name="앞쪽 소나")
+    seabed_ping = Sim3DConfig(
+        signal=Signal("ping", 5000.0, cycles=4), domain=(-1.0, 1.6, -1.0, 1.0, -1.0, 0.8),
+        pml_sides=(True, True, True, True, False, True),
+        bodies=(Body("sphere", (0.9, 0.0, -0.8), (0.4, 0.0, 0.0), name="해저 바위"),
+                Body("cylinder", (-0.3, 0.0, 0.35), (1.2, 0.25, 0.0), name="AUV 몸체")),
+        transducers=(Transducer(center=(0.1, 0.0, 0.18), az_deg=0, el_deg=-50, diameter=0.2, thickness=0.08,
+                                name="하향 소나 (아래 50°)"),))
+    d = 0.15  # λ/2 간격
+    array = tuple(Transducer(center=(-0.6, (k - 1.5) * d, 0.0), diameter=0.13, thickness=0.06,
+                             phase_deg=90.0 * k, name=f"소자 {k + 1} (위상 {90 * k}°)") for k in range(4))
+    a = 0.225
+    return {
+        "auv_cw": Preset3D(
+            "AUV + 앞쪽 소나 (연속파)",
+            "AUV 몸체(원기둥+구) 앞에 지름 20 cm 송신기. 몸체 표면을 따라 도는 회절과 뒤쪽 그림자를 볼 수 있습니다.",
+            Sim3DConfig(domain=(-1.4, 1.8, -1.0, 1.0, -1.0, 1.0), bodies=auv, transducers=(sonar_front,))),
+        "seabed_ping": Preset3D(
+            "해저 위 하향 소나 핑 (바닥·바위 반사)",
+            "z = −1 m 바닥은 강체 벽(해저, 흡수층 끔). 비스듬히 아래로 쏜 4주기 펄스가 바닥과 바위에서 반사되는 모습.",
+            seabed_ping),
+        "array_steer": Preset3D(
+            "4소자 배열 빔 조향 (위상차 +90° → 약 30°)",
+            "y 방향으로 λ/2 간격 소자 4개, 이웃 위상차 +90° (y 가 클수록 늦게 진동). 빔이 +x 에서 +y 쪽으로 sin θ = Δφ/(k d) = 0.5, 약 30° 꺾입니다.",
+            Sim3DConfig(domain=(-0.8, 1.4, -1.0, 1.4, -0.8, 0.8), transducers=array)),
+        "piston_check": Preset3D(
+            "배플 피스톤 (해석해 검증용)",
+            "무한 강체 벽(배플)에 박힌 원형 피스톤. 축 위 |p| 를 닫힌 해와 비교합니다 (요약에 오차 표시).",
+            Sim3DConfig(domain=(-0.45, 0.45, -0.45, 0.45, -0.06, 0.9), cells_per_wavelength=16,
+                        pml_sides=(True, True, True, True, False, True),
+                        bodies=(Body("box", (0, 0, -0.03), (4, 4, 0.06), name="배플 (큰 강체 판)"),),
+                        transducers=(Transducer(center=(0, 0, -0.03), el_deg=90, diameter=2 * a, thickness=0.06,
+                                                name="피스톤 (지름 45 cm)"),))),
+    }

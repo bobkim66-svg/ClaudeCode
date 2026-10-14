@@ -262,3 +262,93 @@ def test_frame_editor_no_slot_exceptions_when_switching(window, monkeypatch):
         wt.editor.add_bar()
         wt.editor.table.item(wt.editor.current_row(), 1).setText("abc")  # 입력 중 잘못된 값
     assert errors == []
+
+
+# ---- 3D 소나 탭 -------------------------------------------------------------------
+def _small_3d(tab, kind="cw"):
+    """빠른 테스트용: 0.9 m 정육면체, 파장당 8 셀, 구 하나 + 송신기 하나."""
+    from polarsim.engine3d.config3d import Body, Signal, Sim3DConfig, Transducer
+
+    cfg = Sim3DConfig(signal=Signal(kind, 5000.0, cycles=3), domain=(-0.45, 0.45, -0.45, 0.45, -0.45, 0.45),
+                      cells_per_wavelength=8, bodies=(Body("sphere", (0.2, 0, 0), (0.25, 0, 0), name="공"),),
+                      transducers=(Transducer(center=(-0.25, 0, 0), diameter=0.2, thickness=0.08, name="소나"),))
+    tab.set_config(cfg)
+    return cfg
+
+
+@pytest.mark.parametrize("kind", ["cw", "ping"])
+def test_tab3d_run_and_all_display_modes(window, kind, monkeypatch):
+    import sys
+
+    errors = []
+    monkeypatch.setattr(sys, "excepthook", lambda *a: errors.append(a))
+    t3 = window.tab3d
+    t3.timer.stop()
+    cfg = _small_3d(t3, kind)
+    assert t3.build() == cfg  # 표 ↔ 설정 왕복 (도 단위, ms 지연 변환 포함)
+    t3.run_sync()
+    t3.timer.stop()
+    assert t3.res.kind == kind and t3.res.curl_ratio < 1e-4
+    for mode in range(t3.mode_box.count()):
+        t3.mode_box.setCurrentIndex(mode)
+        for pm in range(t3.particle_box.count()):
+            t3.particle_box.setCurrentIndex(pm)
+            for db in (True, False):
+                t3.db_check.setChecked(db)
+                t3._tick()
+    t3.slice_sliders[2].setValue(100)
+    t3.slice_checks[0].setChecked(True)
+    t3.time_slider.setValue(t3.time_slider.maximum())
+    assert "다시 계산" not in t3.run_btn.text()
+    t3.trs.table.item(0, 7).setText("0.25")  # 지름 변경 → 다시 계산 안내
+    assert "다시 계산" in t3.run_btn.text()
+    assert errors == []
+
+
+def test_tab3d_gain_and_auto_range(window):
+    t3 = window.tab3d
+    t3.timer.stop()
+    _small_3d(t3, "ping")
+    t3.run_sync()
+    t3.timer.stop()
+    t3.auto_range.setChecked(False)
+    g_fixed = t3.gain()
+    t3.emphasis.setValue(80)
+    assert t3.gain() == pytest.approx(2 * g_fixed)  # 확대 % 에 비례
+    t3.time_slider.setValue(int(0.9 * t3.time_slider.maximum()))  # 펄스가 거의 빠져나간 뒤
+    t3.auto_range.setChecked(True)
+    assert t3._frame_scales()[0] < t3._p_scale  # 약한 프레임은 자동 범위가 더 좁음
+
+
+def test_tab3d_bad_input_and_files(window, tmp_path):
+    from polarsim.engine3d.geometry3d import box_mesh, write_stl_ascii
+
+    t3 = window.tab3d
+    t3.timer.stop()
+    t3.load_preset("auv_cw")
+    t3.bodies.table.item(0, 2).setText("abc")
+    with pytest.raises(ConfigError, match="물체 1행 'x'"):
+        t3.build()
+    t3.load_preset("auv_cw")
+    v, f = box_mesh((200.0, 100.0, 100.0))  # mm
+    write_stl_ascii(tmp_path / "pod.stl", v[f])
+    t3.add_stl(tmp_path / "pod.stl", 0.001)
+    cfg = t3.build()
+    assert cfg.bodies[-1].kind == "stl" and cfg.bodies[-1].size[0] == 0.001
+    t3.save_file(cfg, tmp_path / "scene.json")
+    t3.load_preset("piston_check")
+    t3.open_file(tmp_path / "scene.json")
+    assert t3.build() == cfg
+
+
+def test_tab3d_export(window, tmp_path):
+    t3 = window.tab3d
+    t3.timer.stop()
+    _small_3d(t3, "cw")
+    t3.run_sync()
+    t3.timer.stop()
+    out = t3.export_to(tmp_path / "한글 경로")
+    names = {p.name for p in out.iterdir()}
+    assert {"config.json", "summary.html", "particles.csv"} <= names  # view3d.png 는 OpenGL 있을 때만
+    rows = (out / "particles.csv").read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 1 + len(t3.res.lat_pos)

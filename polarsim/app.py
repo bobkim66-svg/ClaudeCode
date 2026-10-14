@@ -3,8 +3,9 @@
 - 로그: Windows 는 %LOCALAPPDATA%\\polarsim\\logs\\polarsim.log, 그 외 ~/.local/state/polarsim/logs.
   --noconsole 빌드에서는 콘솔이 없으므로 모든 예외를 로그에 남기고 대화상자로 로그 위치를 알린다.
 - 리소스: PyInstaller 번들(sys._MEIPASS) 과 소스 실행 모두에서 docs/ 를 찾는다.
-- --selftest OUT_DIR: 창을 띄워 프리셋 3종을 계산·저장하고 물리 검증 결과를 OUT_DIR 에 기록,
+- --selftest OUT_DIR: 창을 띄워 프리셋 3종 + 엔진 B + 3D 소나를 계산·저장하고 물리 검증 결과를 OUT_DIR 에 기록,
   실패가 있으면 종료 코드 1. CI(Windows 러너) 에서 exe 단독 실행 확인에 사용.
+- --software-gl: QT_OPENGL=software (원격 데스크톱처럼 OpenGL 2.0 이 없는 환경에서 3D 화면용).
 """
 
 from __future__ import annotations
@@ -146,7 +147,7 @@ def run_selftest(out_dir: Path, log_path: Path) -> int:
         check(f"[{key}] 결과 저장", len(files) == 6, ", ".join(files))
         win.grab().save(str(out_dir / f"screenshot_{key}.png"))
     # 엔진 B: AUV 품 방사 (기본 형상)
-    win.tabs.setCurrentIndex(1)
+    win.tabs.setCurrentWidget(win.wave_tab)
     wt = win.wave_tab
     wt.run_sync()
     for _ in range(5):
@@ -162,7 +163,8 @@ def run_selftest(out_dir: Path, log_path: Path) -> int:
     saved = wt.export_to(out_dir)
     check("[엔진 B] 결과 저장", len(list(saved.iterdir())) == 7, ", ".join(sorted(p.name for p in saved.iterdir())))
     win.grab().save(str(out_dir / "screenshot_engineB.png"))
-    win.tabs.setCurrentIndex(2)
+    _selftest_3d(win, app, out_dir, check)
+    win.tabs.setCurrentWidget(win.help)
     app.processEvents()
     win.grab().save(str(out_dir / "screenshot_help.png"))
     win.close()
@@ -175,11 +177,59 @@ def run_selftest(out_dir: Path, log_path: Path) -> int:
     return 1 if n_fail else 0
 
 
+def _selftest_3d(win, app, out_dir: Path, check) -> None:
+    """3D 소나 탭: 작은 격자로 AUV 예시 계산, 검증값, 저장, 그리고 3D 화면이 실제로 그려지는지 (OpenGL)."""
+    import numpy as np
+
+    t3 = win.tab3d
+    win.tabs.setCurrentWidget(t3)
+    t3.load_preset("auv_cw")
+    t3.cpw.setValue(8)  # 자체진단 시간 단축
+    t3.run_sync()
+    t3.timer.stop()
+    for _ in range(5):
+        t3._tick()
+        app.processEvents()
+    r = t3.res
+    check("[3D] 회전 검증 (float32 반올림 수준)", r.curl_ratio < 1e-4, f"curl={r.curl_ratio:.1e}")
+    check("[3D] 연속파 정상상태 도달", r.convergence < 0.02, f"창 차이={r.convergence:.1e}, {r.solve_s:.1f} s")
+    img = t3.view.grab_image()
+    renderer = "?"
+    try:
+        from OpenGL import GL
+
+        t3.view.view.makeCurrent()
+        renderer = (GL.glGetString(GL.GL_RENDERER) or b"?").decode(errors="replace") + " / " + \
+            (GL.glGetString(GL.GL_VERSION) or b"?").decode(errors="replace")
+    except Exception as e:  # 진단 정보일 뿐 — 실패 판정은 아래 픽셀 검사로 한다
+        renderer = f"조회 실패: {type(e).__name__}"
+    drawn = 0.0
+    if not img.isNull():
+        from .gui.view3d import BG
+
+        ptr = img.convertToFormat(img.Format.Format_RGBA8888)
+        arr = np.frombuffer(ptr.constBits(), np.uint8).reshape(ptr.height(), ptr.width(), 4)[..., :3]
+        drawn = float(np.mean(np.any(np.abs(arr.astype(int) - np.array(BG)) > 12, axis=-1)))
+    bundle = Path(getattr(sys, "_MEIPASS", ""))
+    sw = sorted(str(p.relative_to(bundle)) for p in bundle.rglob("opengl32sw.dll")) if bundle.name else []
+    check("[3D] 3D 화면 렌더링 (OpenGL)", drawn > 0.05,
+          f"그려진 픽셀 {drawn:.0%}, {renderer}, 소프트웨어 GL: {sw or '없음/소스 실행'}")
+    saved = t3.export_to(out_dir)
+    names = sorted(p.name for p in saved.iterdir())
+    check("[3D] 결과 저장", {"config.json", "summary.html", "particles.csv", "view3d.png"} <= set(names),
+          ", ".join(names))
+    win.grab().save(str(out_dir / "screenshot_3d.png"))
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     parser = argparse.ArgumentParser(prog=APP_NAME)
     parser.add_argument("--selftest", type=Path, metavar="OUT_DIR", help="자체 진단 후 종료")
+    parser.add_argument("--software-gl", action="store_true",
+                        help="3D 화면을 소프트웨어 OpenGL 로 그림 (원격 데스크톱 등에서 3D 화면이 비거나 검을 때)")
     args = parser.parse_args(argv)
+    if args.software_gl:
+        os.environ["QT_OPENGL"] = "software"  # QApplication 만들기 전에 정해야 함
     log_path = setup_logging()
     install_excepthook(log_path)
     log.info("start %s, python %s, frozen=%s", APP_NAME, sys.version.split()[0], getattr(sys, "frozen", False))
