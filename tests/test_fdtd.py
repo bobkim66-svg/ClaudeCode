@@ -157,3 +157,103 @@ def test_bad_wave_inputs(kw, msg):
 
 def test_cutoff_frequencies():
     assert PocketSpec(gap=1.0).cutoff_frequencies(1500.0, 3200.0) == [750.0, 1500.0, 2250.0, 3000.0]
+
+
+# ---- 막대 프레임 (임의 방향) ------------------------------------------------------
+from polarsim.fdtd import Bar, frame_config, frame_presets, parallel_gaps  # noqa: E402
+
+
+def test_bars_reproduce_pocket_exactly():
+    """같은 형상을 막대 3개로 표현하면 기존 품 모델과 비트 단위로 같은 해."""
+    spec = PocketSpec()
+    for f in (2700.0, 3000.0):
+        a = solve_harmonic(pocket_config(spec, frequency=f, domain=(-1, 2.5, -1.5, 1.5)))
+        b = solve_harmonic(frame_config(spec.bars(), frequency=f, domain=(-1, 2.5, -1.5, 1.5)))
+        assert np.array_equal(a.P, b.P) and np.array_equal(a.solid, b.solid)
+
+
+def test_bar_polar_and_endpoint_forms_agree():
+    b = Bar.from_polar(0.2, -0.1, 30.0, 0.8, 0.05)
+    assert (b.x2, b.y2) == pytest.approx((0.2 + 0.8 * math.cos(math.pi / 6), -0.1 + 0.4))
+    assert b.length == pytest.approx(0.8) and b.angle_deg == pytest.approx(30.0)
+    assert np.allclose(b.normal, [-0.5, math.sqrt(3) / 2])  # 왼쪽 법선
+
+
+@pytest.mark.parametrize("angle", np.arange(0.0, 91.0, 7.0))
+def test_thin_bar_has_no_staircase_gap(angle):
+    """최소 두께 규칙(1.05×) 을 넘는 막대는 계단 근사에서 양쪽 유체가 막대 구간 안에서 연결되지 않는다."""
+    from scipy.ndimage import label
+
+    dx = 0.025
+    b = Bar.from_polar(-0.6, -0.4, angle, 1.0, 1.06 * Bar.from_polar(0, 0, angle, 1, 1).min_thickness(dx))
+    xc = (np.arange(-60, 60) + 0.5) * dx
+    X, Y = np.meshgrid(xc, xc, indexing="ij")
+    s_, d = b.local(X, Y)
+    strip = (s_ >= 0) & (s_ <= b.length) & (np.abs(d) < b.thickness / 2 + 3 * dx)
+    lab, _ = label(strip & ~b.mask(X, Y))  # 4-연결
+    left = set(np.unique(lab[strip & (d > 0)])) - {0}
+    right = set(np.unique(lab[strip & (d < 0) & ~b.mask(X, Y)])) - {0}
+    assert not (left & right)
+
+
+def test_tilted_piston_matches_plane_wave():
+    """30° 기울인 긴 피스톤: 중심선 위에서 진폭 ≈ ξ0, 에너지 흐름 방향 ≈ 법선, 가짜 타원도 작음 (계단 오차)."""
+    a = math.radians(30.0)
+    t = np.array([math.cos(a), math.sin(a)])
+    L = 8 * LAM
+    p1 = -t * L / 2
+    bar = Bar(p1[0], p1[1], p1[0] + t[0] * L, p1[1] + t[1] * L, 0.1, "left", XI, 0.3, "piston")
+    r = solve_harmonic(frame_config((bar,), frequency=3000.0, domain=(-2.5, 2.5, -2.5, 2.5)))
+    m = wave_metrics(r, WaveConfig().medium)
+    X, Y = np.meshgrid(r.xc, r.yc, indexing="ij")
+    s_, d = bar.local(X, Y)
+    sel = (np.abs(s_ - L / 2) < 0.6 * r.dx) & (d > 0.5 * LAM) & (d < 2.0 * LAM)
+    amp = np.linalg.norm(np.abs(r.U[sel]), axis=1) / XI
+    assert amp.mean() == pytest.approx(1.0, abs=0.03)
+    I = m["I"][sel]
+    err = np.degrees(np.arccos(np.clip(I @ bar.normal / np.linalg.norm(I, axis=1), -1, 1)))
+    assert err.max() < 4.0  # λ/20 에서 ≤ 3° (λ/40 에서 ≤ 1.1°, 셀 크기에 비례)
+    assert np.nanmax(m["e"][sel]) < 0.07
+    assert r.curl_ratio < 1e-12
+
+
+def test_tilted_frame_energy_conservation():
+    pr = frame_presets()["v"]
+    cfg = frame_config(pr.bars, frequency=2700.0, domain=(-1, 2.5, -1.8, 1.8))
+    r = solve_harmonic(cfg)
+    I = wave_metrics(r, cfg.medium)["I"]
+    m = 3
+    i0, i1, j0, j1 = m, r.P.shape[0] - 1 - m, m, r.P.shape[1] - 1 - m
+    flux = (I[i1, j0:j1 + 1, 0].sum() - I[i0, j0:j1 + 1, 0].sum()
+            + I[i0:i1 + 1, j1, 1].sum() - I[i0:i1 + 1, j0, 1].sum()) * r.dx
+    assert flux / emitted_power(r, cfg) == pytest.approx(1.0, abs=0.02)
+
+
+@pytest.mark.parametrize("bar, msg", [
+    (Bar(0, 0, 0, 0, 0.1, "left"), "길이가 0"),
+    (Bar(0, 0, 1, 0, 0.0, "left"), "두께는 양수"),
+    (Bar(0, 0, 1, 0, 0.1, "up"), "방사면은"),
+    (Bar(0, 0, 9, 0, 0.1, "left"), "계산 영역 밖"),
+    (Bar.from_polar(0, 0, 30, 1, 0.01, emit="left"), "너무 얇아"),
+    (Bar(0, 0, 1, 0, 0.1, "none"), "켜진 방사면이 없습니다"),
+])
+def test_bad_bar_inputs(bar, msg):
+    with pytest.raises(ConfigError, match=msg):
+        solve_harmonic(frame_config((bar,), domain=(-1, 2, -1, 1)))
+
+
+def test_parallel_gaps_and_forward_half_plane(pocket):
+    gaps = parallel_gaps(PocketSpec().bars())
+    assert gaps == [("윗판", "아랫판", pytest.approx(1.0))]
+    assert parallel_gaps(frame_presets()["v"].bars) == []  # ±20° 판은 평행 아님
+    cfg, r = pocket
+    met = wave_metrics(r, cfg.medium)
+    a = radial_ellipticity(r, met, (1.0, 0.0), cfg.wavelength, (1, 2, 3), half_plane_x=1.0)
+    b = radial_ellipticity(r, met, (1.0, 0.0), cfg.wavelength, (1, 2, 3), forward_deg=0.0)
+    assert [x["e_energy"] for x in a] == pytest.approx([x["e_energy"] for x in b])
+
+
+def test_presets_solve():
+    for key, pr in frame_presets().items():
+        r = solve_harmonic(frame_config(pr.bars, frequency=2700.0, domain=pr.domain, cells_per_wavelength=12))
+        assert r.curl_ratio < 1e-12, key

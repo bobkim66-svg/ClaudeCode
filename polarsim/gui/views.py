@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from .style import (ARROW_COLOR, EQUILIBRIUM_COLOR, SEGMENT_COLOR, SELECT_COLOR, diverging_lut, sequential_lut,
                     style_plot, to_rgba)
@@ -50,23 +50,42 @@ class _ClickablePlot(pg.GraphicsLayoutWidget):
         p = self.plot.vb.mapSceneToView(ev.scenePos())
         self.particleClicked.emit(*_nearest_index(self._su, self._sv, p.x(), p.y(), self._mask))
 
-    def set_overlay(self, rects=(), lines=()) -> None:
-        """강체 직사각형 (x0,x1,y0,y1) [m] 은 진회색으로, 방사면 선분 ((x0,y0),(x1,y1)) 은 주황 굵은 선으로."""
+    def set_overlay(self, rects=(), lines=(), polys=(), arrows=(), highlight=None) -> None:
+        """형상 덧그리기.
+
+        rects: 강체 직사각형 (x0,x1,y0,y1) [m] — 진회색.  polys: 기울어진 막대 꼭짓점 (k,2) [m] — 진회색.
+        lines: 방사면 선분 ((x0,y0),(x1,y1)) — 주황 굵은 선.  arrows: 방사 방향 ((x,y),(dx,dy)) — 주황 화살표.
+        highlight: 강조할 다각형 (k,2) — 빨간 테두리 (편집기에서 선택한 막대).
+        """
         for it in self._overlay:
             self.plot.removeItem(it)
         self._overlay = []
+
+        def add(item, z):
+            item.setZValue(z)
+            self.plot.addItem(item)
+            self._overlay.append(item)
+
         for x0, x1, y0, y1 in rects:
             r = QtWidgets.QGraphicsRectItem(x0, y0, x1 - x0, y1 - y0)
             r.setBrush(pg.mkBrush(90, 90, 90, 255))
             r.setPen(pg.mkPen(None))
-            r.setZValue(20)
-            self.plot.addItem(r)
-            self._overlay.append(r)
+            add(r, 20)
+        for pts in polys:
+            poly = QtWidgets.QGraphicsPolygonItem(QtGui.QPolygonF([QtCore.QPointF(float(x), float(y)) for x, y in pts]))
+            poly.setBrush(pg.mkBrush(90, 90, 90, 255))
+            poly.setPen(pg.mkPen(None))
+            add(poly, 20)
         for (xa, ya), (xb, yb) in lines:
-            ln = pg.PlotDataItem([xa, xb], [ya, yb], pen=pg.mkPen((240, 140, 20), width=4))
-            ln.setZValue(21)
-            self.plot.addItem(ln)
-            self._overlay.append(ln)
+            add(pg.PlotDataItem([xa, xb], [ya, yb], pen=pg.mkPen((240, 140, 20), width=4)), 21)
+        for (x, y), (ddx, ddy) in arrows:
+            add(pg.PlotDataItem([x, x + ddx], [y, y + ddy], pen=pg.mkPen((240, 140, 20), width=2)), 22)
+            head = pg.ScatterPlotItem([x + ddx], [y + ddy], size=9, pen=None, brush=pg.mkBrush(240, 140, 20),
+                                      symbol="o")
+            add(head, 22)
+        if highlight is not None:
+            pts = np.vstack([highlight, highlight[:1]])
+            add(pg.PlotDataItem(pts[:, 0], pts[:, 1], pen=pg.mkPen(SELECT_COLOR, width=2.5)), 23)
 
 
 class PlaneView(_ClickablePlot):

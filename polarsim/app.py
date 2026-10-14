@@ -160,7 +160,7 @@ def run_selftest(out_dir: Path, log_path: Path) -> int:
     check("[엔진 B] 품 밖 타원도가 거리에 따라 감소", len(e_far) >= 3 and e_far[-1] < e_far[1],
           ", ".join(f"{v:.3f}" for v in e_far))
     saved = wt.export_to(out_dir)
-    check("[엔진 B] 결과 저장", len(list(saved.iterdir())) == 6, ", ".join(sorted(p.name for p in saved.iterdir())))
+    check("[엔진 B] 결과 저장", len(list(saved.iterdir())) == 7, ", ".join(sorted(p.name for p in saved.iterdir())))
     win.grab().save(str(out_dir / "screenshot_engineB.png"))
     win.tabs.setCurrentIndex(2)
     app.processEvents()

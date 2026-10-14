@@ -1,6 +1,6 @@
-"""엔진 B 탭: AUV 품(삼면 박스) 방사, 2D 주파수 영역 정상상태. 벽 반사·회절 포함.
+"""엔진 B 탭: 로봇 프레임(막대 여러 개, 임의 각도) 방사, 2D 주파수 영역 정상상태. 벽 반사·회절 포함.
 
-엔진 A (무한 평면파) 와 달리 소스가 박스 내부 면에만 있으므로, 품 밖에서 입자 궤적이 어떻게 바뀌는지 볼 수 있다.
+엔진 A (무한 평면파) 와 달리 소스가 막대의 방사 면에만 있으므로, 프레임 밖에서 입자 궤적이 어떻게 바뀌는지 볼 수 있다.
 """
 
 from __future__ import annotations
@@ -15,15 +15,17 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
+import pyqtgraph as pg
 from pyqtgraph.exporters import ImageExporter
 from PySide6 import QtCore, QtWidgets
 
 from ..config import ConfigError, Medium
 from ..export import timestamped_dir
 from ..metrics import SMALL_AMPLITUDE_KA
-from ..fdtd import (PocketSpec, WaveConfig, WaveResult, emitted_power, pocket_config, radial_ellipticity,
-                    solve_harmonic, wave_metrics)
+from ..fdtd import (Bar, FramePreset, WaveConfig, WaveResult, emitted_power, frame_config, parallel_gaps,
+                    radial_ellipticity, solve_harmonic, wave_metrics)
 from ..display import CROSSING_AREA, area_ratio, emphasis_gain, gradient_scale
+from .frame_editor import FrameEditor
 from .views import MetricMap, PlaneView, TrajectoryView
 
 log = logging.getLogger(__name__)
@@ -44,13 +46,32 @@ MAPS = {
     "pabs": ("음압 진폭 |p| [Pa]", None),
     "Imag": ("세기 크기 |I| [W/m²]", None),
 }
-WALLS = (("back", "뒷벽 (+x 방사)", 0.0), ("top", "윗판 (−y 방사)", 90.0), ("bottom", "아랫판 (+y 방사)", 90.0))
+ARROW_LEN_LAMBDA = 0.35  # 방사 방향 화살표 길이 [λ]
+SLANT_E_NOTE = 0.05  # 기울어진 막대 계단 근사로 생길 수 있는 가짜 타원도 크기 (λ/20, 측정값)
+
+
+def frame_overlay(bars, wavelength: float):
+    """막대 → (다각형, 방사면 선분, 방사 방향 화살표). 화살표는 각 방사 면 가운데에서 바깥 법선 방향."""
+    polys, lines, arrows = [], [], []
+    for b in bars:
+        polys.append(b.corners())
+        if not b.emits:
+            continue
+        c = b.corners()
+        mid = (np.array([b.x1, b.y1]) + np.array([b.x2, b.y2])) / 2
+        half = b.normal * b.thickness / 2
+        for side, sign, edge in (("left", 1, (c[0], c[1])), ("right", -1, (c[3], c[2]))):
+            if b.emit in (side, "both"):
+                lines.append((tuple(edge[0]), tuple(edge[1])))
+                arrows.append((tuple(mid + sign * half), tuple(sign * b.normal * ARROW_LEN_LAMBDA * wavelength)))
+    return polys, lines, arrows
 
 
 @dataclass
 class WaveBundle:
     cfg: WaveConfig
-    spec: PocketSpec
+    ref: tuple[float, float]  # 거리 통계 기준점 [m]
+    forward_deg: float  # 기준점에서 '앞쪽' 방향 [°]
     res: WaveResult
     met: dict
     radial: list[dict]
@@ -73,15 +94,15 @@ def _flux_out(res: WaveResult, I: np.ndarray, margin: int = 3) -> float | None:
                   + I[i0:i1 + 1, j1, 1].sum() - I[i0:i1 + 1, j0, 1].sum()) * d)
 
 
-def compute(cfg: WaveConfig, spec: PocketSpec) -> WaveBundle:
+def compute(cfg: WaveConfig, ref: tuple[float, float], forward_deg: float) -> WaveBundle:
     t = time.perf_counter()
     res = solve_harmonic(cfg)
     dt = time.perf_counter() - t
     met = wave_metrics(res, cfg.medium)
     met["pabs"] = np.where(res.solid, np.nan, np.abs(res.P))
     met["Imag"] = np.linalg.norm(met["I"], axis=-1)
-    radial = radial_ellipticity(res, met, (spec.length, 0.0), cfg.wavelength, RADIAL_EDGES, half_plane_x=spec.length)
-    return WaveBundle(cfg, spec, res, met, radial, emitted_power(res, cfg), _flux_out(res, met["I"]), dt)
+    radial = radial_ellipticity(res, met, ref, cfg.wavelength, RADIAL_EDGES, forward_deg=forward_deg)
+    return WaveBundle(cfg, ref, forward_deg, res, met, radial, emitted_power(res, cfg), _flux_out(res, met["I"]), dt)
 
 
 def _line(text: str) -> QtWidgets.QLineEdit:
@@ -130,11 +151,11 @@ class WaveTab(QtWidgets.QWidget):
         scroll = QtWidgets.QScrollArea()
         scroll.setWidget(self.controls)
         scroll.setWidgetResizable(True)
-        scroll.setMinimumWidth(400)
+        scroll.setMinimumWidth(640)  # 막대 표 11열이 가로 스크롤 없이 보이도록
         split = QtWidgets.QSplitter()
         split.addWidget(scroll)
         split.addWidget(right)
-        split.setSizes([420, 1180])
+        split.setSizes([700, 1000])
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(split)
@@ -146,9 +167,17 @@ class WaveTab(QtWidgets.QWidget):
         self._poll.setInterval(50)
         self._poll.timeout.connect(self._check_future)
         self.info.setHtml(
-            "<b>엔진 B: AUV 품 방사 (2D, 벽 반사·회절 포함)</b><br>"
-            "삼면이 막힌 박스의 안쪽 면이 피스톤처럼 진동합니다. [계산 실행] 을 누르세요.<br>"
-            "<small>주파수 영역 정상상태 해 (희소 직접법). z 방향으로 무한히 긴 판을 가정한 2D 모델입니다.</small>")
+            "<b>엔진 B: 로봇 프레임 방사 (2D, 벽 반사·회절 포함)</b><br>"
+            "왼쪽 '로봇 프레임' 표에서 막대를 편집하면 그림에 바로 미리보기가 나옵니다 (회색 = 막대, 주황 = 방사 면과 방향). "
+            "다 되면 [계산 실행] 을 누르세요.<br>"
+            "<small>주파수 영역 정상상태 해 (희소 직접법). z 방향으로 무한히 긴 막대를 가정한 2D 모델입니다.</small>")
+        self.editor.changed.connect(self._preview)
+        self.editor.selectionChanged.connect(lambda _r: self._preview())
+        self.editor.presetLoaded.connect(self._apply_preset)
+        self.editor.window_extra = self._extra_for_file
+        for e in self.dom + [self.ref_x, self.ref_y, self.fwd_edit, self.c_edit, self.f_edit]:
+            e.textChanged.connect(self._preview)
+        self.editor.load_preset("box")
 
     # ------------------------------------------------------------------ 입력
     def _build_controls(self) -> None:
@@ -167,29 +196,23 @@ class WaveTab(QtWidgets.QWidget):
             e.textChanged.connect(self._update_lambda)
         lay.addWidget(g)
 
-        g = QtWidgets.QGroupBox("품 (삼면 박스) 형상 [m]")
-        fl = QtWidgets.QFormLayout(g)
-        self.L_edit, self.D_edit, self.t_edit, self.body_edit = _line("1.0"), _line("1.0"), _line("0.1"), _line("0.6")
-        fl.addRow("깊이 L (뒷벽→입구)", self.L_edit)
-        fl.addRow("판 사이 간격 D", self.D_edit)
-        fl.addRow("판 두께", self.t_edit)
-        fl.addRow("뒷벽 뒤 AUV 몸체 길이", self.body_edit)
+        g = QtWidgets.QGroupBox("로봇 프레임 (막대, 최대 12개)")
+        gl = QtWidgets.QVBoxLayout(g)
+        self.editor = FrameEditor()
+        gl.addWidget(self.editor)
         lay.addWidget(g)
 
-        g = QtWidgets.QGroupBox("방사면 (면 변위 ξ0 cos(ωt − φ))")
-        gl = QtWidgets.QGridLayout(g)
-        for col, h in enumerate(("면", "켜기", "진폭 ξ0 [m]", "위상 φ [°]")):
-            gl.addWidget(QtWidgets.QLabel(f"<b>{h}</b>"), 0, col)
-        self.wall_widgets = {}
-        for row, (key, label, ph) in enumerate(WALLS, start=1):
-            on = QtWidgets.QCheckBox()
-            on.setChecked(True)
-            amp, phase = _line("1e-5"), _line(f"{ph:g}")
-            gl.addWidget(QtWidgets.QLabel(label), row, 0)
-            gl.addWidget(on, row, 1)
-            gl.addWidget(amp, row, 2)
-            gl.addWidget(phase, row, 3)
-            self.wall_widgets[key] = (on, amp, phase)
+        g = QtWidgets.QGroupBox("거리 통계 기준점 (보통 입구 중심)")
+        fl = QtWidgets.QFormLayout(g)
+        self.ref_x, self.ref_y, self.fwd_edit = _line("1"), _line("0"), _line("0")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self.ref_x)
+        row.addWidget(self.ref_y)
+        fl.addRow("기준점 x, y [m]", row)
+        fl.addRow("앞쪽 방향 [°] (x 축에서 반시계)", self.fwd_edit)
+        tip = QtWidgets.QLabel("<small>기준점에서 앞쪽 반평면만 거리별 타원도 표에 넣습니다. 그림의 빨간 + 와 화살표.</small>")
+        tip.setWordWrap(True)
+        fl.addRow(tip)
         lay.addWidget(g)
 
         g = QtWidgets.QGroupBox("계산 영역 [m] (바깥에 흡수층 PML 자동 추가)")
@@ -268,34 +291,91 @@ class WaveTab(QtWidgets.QWidget):
         except (ValueError, ZeroDivisionError):
             self.lam_label.setText("파장: 입력 확인")
 
-    def build(self) -> tuple[WaveConfig, PocketSpec]:
+    def build(self) -> tuple[WaveConfig, tuple[float, float], float]:
         medium = Medium(c=_num(self.c_edit, "음속"), rho=_num(self.rho_edit, "밀도"))
-        walls = {}
-        for key, label, _ in WALLS:
-            on, amp, ph = self.wall_widgets[key]
-            a = _num(amp, f"{label} 진폭")
-            if a < 0 or not math.isfinite(a):
-                raise ConfigError(f"{label} 진폭: 0 이상이어야 합니다.")
-            walls[key] = (on.isChecked(), a, math.radians(_num(ph, f"{label} 위상")))
-        geo = [_num(e, n) for e, n in ((self.L_edit, "깊이 L"), (self.D_edit, "간격 D"), (self.t_edit, "판 두께"),
-                                       (self.body_edit, "몸체 길이"))]
-        if min(geo) <= 0:
-            raise ConfigError("품 치수는 모두 양수여야 합니다.")
-        spec = PocketSpec(length=geo[0], gap=geo[1], thickness=geo[2], body_depth=geo[3], **walls)
         dom = tuple(_num(e, "계산 영역") for e in self.dom)
-        cfg = pocket_config(spec, medium=medium, frequency=_num(self.f_edit, "주파수"), domain=dom,
-                            cells_per_wavelength=float(self.cpw.value()))
+        cfg = frame_config(self.editor.get_bars(), medium=medium, frequency=_num(self.f_edit, "주파수"), domain=dom,
+                           cells_per_wavelength=float(self.cpw.value()))
         cfg.validate()
-        x0, x1, y0, y1 = dom
-        h = spec.gap / 2 + spec.thickness
-        if not (x0 < -spec.body_depth and x1 > spec.length and y0 < -h and y1 > h):
-            raise ConfigError("계산 영역이 품과 몸체를 모두 포함해야 합니다 (x0 < −몸체 길이, x1 > L, |y| > D/2 + 두께).")
-        return cfg, spec
+        ref = (_num(self.ref_x, "기준점 x"), _num(self.ref_y, "기준점 y"))
+        return cfg, ref, _num(self.fwd_edit, "앞쪽 방향")
+
+    # ------------------------------------------------------------------ 프레임 미리보기·예시
+    def _apply_preset(self, pr) -> None:
+        """예시(FramePreset) 또는 파일에서 읽은 dict 의 영역·기준점을 입력칸에 반영."""
+        if isinstance(pr, FramePreset):
+            dom, ref, fwd = pr.domain, pr.reference, pr.forward_deg
+        else:
+            dom, ref, fwd = pr.get("domain"), pr.get("reference"), pr.get("forward_deg")
+        if dom:
+            for e, v in zip(self.dom, dom):
+                e.setText(f"{v:g}")
+        if ref:
+            self.ref_x.setText(f"{ref[0]:g}")
+            self.ref_y.setText(f"{ref[1]:g}")
+        if fwd is not None:
+            self.fwd_edit.setText(f"{fwd:g}")
+        self._preview()
+
+    def _extra_for_file(self) -> dict:
+        try:
+            return {"domain": [float(e.text()) for e in self.dom],
+                    "reference": [float(self.ref_x.text()), float(self.ref_y.text())],
+                    "forward_deg": float(self.fwd_edit.text())}
+        except ValueError:
+            return {}
+
+    def _preview(self) -> None:
+        """표를 고칠 때마다 막대·방사 방향·기준점을 바로 그린다 (계산 전에도)."""
+        bars = self.editor.try_bars()
+        try:
+            lam = float(self.c_edit.text()) / float(self.f_edit.text())
+        except (ValueError, ZeroDivisionError):
+            lam = 0.5
+        polys, lines, arrows = frame_overlay(bars, lam)
+        try:
+            rx, ry, fwd = float(self.ref_x.text()), float(self.ref_y.text()), math.radians(float(self.fwd_edit.text()))
+            arrows = arrows + [((rx, ry), (0.5 * lam * math.cos(fwd), 0.5 * lam * math.sin(fwd)))]
+        except ValueError:
+            rx = ry = None
+        r = self.editor.current_row()
+        hl = None
+        if 0 <= r < self.editor.table.rowCount():
+            try:
+                hl = self.editor._read_row(r).corners()
+            except ConfigError:
+                hl = None
+        for v in (self.plane_view, self.map_view):
+            v.set_overlay((), lines, polys, arrows, hl)
+            if rx is not None:
+                marker = pg.ScatterPlotItem([rx], [ry], size=14, symbol="+", pen=pg.mkPen((200, 30, 30), width=2))
+                marker.setZValue(24)
+                v.plot.addItem(marker)
+                v._overlay.append(marker)
+        if self.bundle is None:
+            try:
+                x0, x1, y0, y1 = (float(e.text()) for e in self.dom)
+                for v in (self.plane_view, self.map_view):
+                    v.plot.setRange(xRange=(x0, x1), yRange=(y0, y1), padding=0.02)
+            except ValueError:
+                pass
+        else:
+            self._mark_stale()
+
+    def _mark_stale(self) -> None:
+        """계산 뒤에 입력이 바뀌면 그림의 장(field) 은 옛 결과임을 알린다."""
+        try:
+            cur = self.build()
+        except ConfigError:
+            cur = None
+        b = self.bundle
+        stale = cur is None or (cur[0], cur[1], cur[2]) != (b.cfg, b.ref, b.forward_deg)
+        self.run_btn.setText("계산 실행  (입력이 바뀜 — 다시 계산하세요)" if stale else "계산 실행")
 
     # ------------------------------------------------------------------ 계산
     def run(self) -> None:
         try:
-            cfg, spec = self.build()
+            cfg, ref, fwd = self.build()
         except ConfigError as e:
             QtWidgets.QMessageBox.warning(self, "입력 오류", str(e))
             return
@@ -304,12 +384,11 @@ class WaveTab(QtWidgets.QWidget):
         self.run_btn.setEnabled(False)
         self.run_btn.setText("계산 중… (보통 수 초)")
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
-        self._future = self._executor.submit(compute, cfg, spec)
+        self._future = self._executor.submit(compute, cfg, ref, fwd)
         self._poll.start()
 
     def run_sync(self) -> None:
-        cfg, spec = self.build()
-        self._apply(compute(cfg, spec))
+        self._apply(compute(*self.build()))
 
     def _check_future(self) -> None:
         if self._future is None or not self._future.done():
@@ -342,14 +421,7 @@ class WaveTab(QtWidgets.QWidget):
         self._stride, self._off = stride, off
         fluid_sub = ~res.solid[self._sub]
         self.plane_view.set_grid(X[self._sub], Y[self._sub], fluid_sub)
-        rects = [(r.x0, r.x1, r.y0, r.y1) for r in b.cfg.solids]
-        lines = []
-        for e in b.cfg.emitters:
-            if e.enabled and e.amplitude > 0:
-                lines.append(((e.position, e.span[0]), (e.position, e.span[1])) if e.axis == "x"
-                             else ((e.span[0], e.position), (e.span[1], e.position)))
-        self.plane_view.set_overlay(rects, lines)
-        self.map_view.set_overlay(rects, lines)
+        self._preview()
         self._U_sub = res.U[self._sub]
         self._P_sub = res.P[self._sub]
         u_abs = np.linalg.norm(np.abs(self._U_sub), axis=-1)[fluid_sub]
@@ -372,9 +444,14 @@ class WaveTab(QtWidgets.QWidget):
         # 99 백분위: 판 모서리의 회절 특이점 몇 개에 배율이 끌려가지 않게
         self._grad_scale = gradient_scale([G2], ~near_solid, percentile=99)
         self.t_sim = 0.0
-        ic = int(np.argmin(np.abs(res.xc - (b.spec.length + 2 * b.cfg.wavelength))))
-        jc = int(np.argmin(np.abs(res.yc)))
-        self.select_cell(ic, jc)  # 기본 선택: 입구 앞 2λ, 축 위
+        fw = math.radians(b.forward_deg)
+        tx, ty = b.ref[0] + 2 * b.cfg.wavelength * math.cos(fw), b.ref[1] + 2 * b.cfg.wavelength * math.sin(fw)
+        ic, jc = int(np.argmin(np.abs(res.xc - tx))), int(np.argmin(np.abs(res.yc - ty)))
+        if res.solid[ic, jc]:  # 기준점 앞 2λ 가 막대 속이면 가장 가까운 유체 셀
+            d2 = np.where(res.solid, np.inf, (X - tx) ** 2 + (Y - ty) ** 2)
+            ic, jc = np.unravel_index(int(np.argmin(d2)), d2.shape)
+        self.select_cell(int(ic), int(jc))  # 기본 선택: 기준점 앞 2λ
+        self.run_btn.setText("계산 실행")
         self._update_map()
         self._update_info()
         self._refresh_frame()
@@ -478,13 +555,13 @@ class WaveTab(QtWidgets.QWidget):
         I = m["I"][i, j]
         In = float(np.linalg.norm(I))
         lam = b.cfg.wavelength
-        r = math.hypot(b.res.xc[i] - b.spec.length, b.res.yc[j]) / lam
+        r = math.hypot(b.res.xc[i] - b.ref[0], b.res.yc[j] - b.ref[1]) / lam
 
         def fmt(v):
             return "정의 불가 (NaN)" if not np.isfinite(v) else f"{v:.3f}"
 
         idir = "정의 불가" if not np.isfinite(m["T"][i, j]) else f"({I[0] / In:+.2f}, {I[1] / In:+.2f})"
-        html_ = (f"<b>선택 입자</b> ({b.res.xc[i]:.3f}, {b.res.yc[j]:.3f}) m · 입구 중심에서 {r:.2f} λ · "
+        html_ = (f"<b>선택 입자</b> ({b.res.xc[i]:.3f}, {b.res.yc[j]:.3f}) m · 기준점에서 {r:.2f} λ · "
                  f"RMS 변위 {m['rms'][i, j]:.3g} m · |p| {abs(b.res.P[i, j]):.3g} Pa<br>"
                  f"직선성 L = {fmt(m['L'][i, j])} · 타원도 e = {fmt(m['e'][i, j])} · 횡성분율 T = {fmt(m['T'][i, j])} · "
                  f"세기 방향 Î = {idir}<br><small>궤적은 시각 배율 없는 실제 변위 (2D 이므로 z 성분 0)</small>")
@@ -493,7 +570,7 @@ class WaveTab(QtWidgets.QWidget):
 
     def _update_info(self) -> None:
         b = self.bundle
-        res, cfg, spec = b.res, b.cfg, b.spec
+        res, cfg = b.res, b.cfg
         lam = cfg.wavelength
         ok = res.curl_ratio < 1e-10
         color = "#1e7d32" if ok else "#c0392b"
@@ -506,15 +583,14 @@ class WaveTab(QtWidgets.QWidget):
             col = "#1e7d32" if abs(ratio - 1) < 0.03 else "#c0392b"
             L.append(f"<b>에너지 보존</b>: 방사 일률 {b.power_in:.3g} W/m, 경계 밖으로 나간 세기 {b.power_out:.3g} W/m "
                      f"(<span style='color:{col}'>비 {ratio:.3f}</span>)")
-        spacing = cfg.medium.c / (2 * spec.gap)  # 차단 주파수 간격 c/2D [Hz]
-        cuts = spec.cutoff_frequencies(cfg.medium.c, cfg.frequency * 1.2)
-        near = [fc for fc in cuts if abs(fc - cfg.frequency) < RESONANCE_BAND * spacing]
-        if near:
-            m = round(near[0] / spacing)
-            mid = [(k + 0.5) * spacing for k in (m - 1, m)]
-            L.append(f"<b style='color:#b9770e'>공진 주의</b>: 판 사이 횡모드 차단 주파수 {near[0]:.0f} Hz "
-                     f"(= {m}·c/2D) 근처입니다. 품 안 압력이 크게 증폭될 수 있고 (실제 구조에서는 손실이 제한), "
-                     f"정상상태까지 오래 걸립니다. 피하려면 두 차단 주파수의 가운데 ({mid[0]:.0f} 또는 {mid[1]:.0f} Hz) 를 쓰세요.")
+        for na, nb, gap in parallel_gaps(cfg.bars):  # 마주 보는 평행 막대 사이 횡모드 공진
+            spacing = cfg.medium.c / (2 * gap)  # 차단 주파수 간격 c/2D [Hz]
+            m = round(cfg.frequency / spacing)
+            if m >= 1 and abs(cfg.frequency - m * spacing) < RESONANCE_BAND * spacing:
+                mid = [(k + 0.5) * spacing for k in (m - 1, m)]
+                L.append(f"<b style='color:#b9770e'>공진 주의</b>: '{html.escape(na)}' 와 '{html.escape(nb)}' 사이 (간격 "
+                         f"{gap:.3g} m) 횡모드 차단 주파수 {m * spacing:.0f} Hz (= {m}·c/2D) 근처입니다. 압력이 크게 증폭될 수 "
+                         f"있고 (실제 구조에서는 손실이 제한), 피하려면 {mid[0]:.0f} 또는 {mid[1]:.0f} Hz 를 쓰세요.")
         ka = 2 * math.pi / lam * b.met["a_ref"]
         if ka > SMALL_AMPLITUDE_KA:
             L.append(f"<b style='color:#c0392b'>소진폭 가정 위반</b>: 최대 변위 {b.met['a_ref']:.3g} m, k·u = {ka:.3g} "
@@ -536,9 +612,15 @@ class WaveTab(QtWidgets.QWidget):
 
         rows = "".join(row(r) for r in b.radial if r["n"] > 0)
         X, Y = self._X, self._Y
-        inside = (X > 0) & (X < spec.length) & (np.abs(Y) < spec.gap / 2)
-        L.append(f"<b>품 안</b>: 타원도 e 중앙값 {np.nanmedian(b.met['e'][inside]):.3f}<br>"
-                 "<b>품 밖 (입구 앞 반평면, 입구 중심으로부터 거리별)</b>"
+        fw = math.radians(b.forward_deg)
+        along = (X - b.ref[0]) * math.cos(fw) + (Y - b.ref[1]) * math.sin(fw)
+        behind = (along < 0) & (np.hypot(X - b.ref[0], Y - b.ref[1]) < cfg.wavelength) & ~res.solid
+        e_behind = f"{np.nanmedian(b.met['e'][behind]):.3f}" if behind.any() else "–"
+        slanted = any(abs(bb.angle_deg / 90 - round(bb.angle_deg / 90)) > 1e-9 for bb in cfg.bars)
+        slant_note = (f" <small>(기울어진 막대 근처의 e &lt; {SLANT_E_NOTE} 는 계단 근사 오차일 수 있음 — 파장당 셀 수를 "
+                      "늘려 같은지 확인)</small>") if slanted else ""
+        L.append(f"<b>기준점 뒤쪽 1λ 이내 (보통 품 안)</b>: 타원도 e 중앙값 {e_behind}{slant_note}<br>"
+                 "<b>기준점 앞쪽 반평면, 기준점으로부터 거리별</b>"
                  "<table cellspacing=4><tr><th>거리</th><th>포함률</th><th>e (에너지 가중)</th><th>e 중앙값</th>"
                  f"<th>e&gt;0.3</th><th>1/(kr)</th></tr>{rows}</table>"
                  "<small>회색 행 = 계산 영역이 그 거리의 반고리를 다 덮지 못함 → 모서리 방향만 표본이라 비교 불가. "
@@ -570,7 +652,7 @@ class WaveTab(QtWidgets.QWidget):
 
     def export_to(self, base: Path) -> Path:
         b = self.bundle
-        out = timestamped_dir(base, "pocket")
+        out = timestamped_dir(base, "frame")
         res, m = b.res, b.met
         X, Y = self._X, self._Y
         cols = np.stack([X.ravel(), Y.ravel(), res.solid.ravel().astype(float), m["L"].ravel(), m["e"].ravel(),
@@ -579,8 +661,11 @@ class WaveTab(QtWidgets.QWidget):
         header = "x [m],y [m],solid,L,e,T,rms [m],|p| [Pa],Ix [W/m2],Iy [W/m2]"
         np.savetxt(out / "field_metrics.csv", cols, delimiter=",", header=header, comments="", fmt="%.8g",
                    encoding="utf-8")
-        (out / "config.json").write_text(json.dumps({"wave": asdict(b.cfg), "pocket": asdict(b.spec)},
-                                                    ensure_ascii=False, indent=2), encoding="utf-8")
+        (out / "config.json").write_text(json.dumps(
+            {"wave": asdict(b.cfg), "reference": list(b.ref), "forward_deg": b.forward_deg},
+            ensure_ascii=False, indent=2), encoding="utf-8")
+        self.editor.save_to(out / "frame.json", {"domain": list(b.cfg.domain), "reference": list(b.ref),
+                                                 "forward_deg": b.forward_deg})
         (out / "summary.html").write_text(self.info.toHtml(), encoding="utf-8")
         key = self.map_box.currentData()
         for name, widget in (("particles", self.plane_view), (f"map_{key}", self.map_view),

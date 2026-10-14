@@ -70,6 +70,96 @@ class Emitter:
     name: str = ""
 
 
+EMIT_SIDES = ("none", "left", "right", "both")
+
+
+@dataclass(frozen=True)
+class Bar:
+    """임의 방향의 강체 막대(판). 로봇 프레임은 막대 여러 개로 만든다.
+
+    중심선 끝점 (x1, y1) → (x2, y2) [m], 두께 thickness [m] (중심선 양쪽으로 절반씩).
+    왼쪽 / 오른쪽 면 = 끝점 1 에서 끝점 2 를 향해 걸을 때 왼쪽 / 오른쪽. 왼쪽 법선 n = (−t_y, t_x).
+    emit: 방사 면 ("none" = 그냥 벽, "left", "right", "both").
+      방사 면은 그 면의 바깥 법선 방향으로 변위 ξ0 cos(ωt − φ) 로 진동하는 피스톤 (amplitude = ξ0, phase = φ [rad]).
+      막대 끝 단면은 방사하지 않는다 (강체).
+    """
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    thickness: float
+    emit: str = "none"
+    amplitude: float = 1e-5
+    phase: float = 0.0
+    name: str = ""
+
+    @classmethod
+    def from_polar(cls, x1: float, y1: float, angle_deg: float, length: float, thickness: float, **kw) -> "Bar":
+        """한 끝점 + 각도 (x 축에서 반시계, 도) + 길이로 만든다."""
+        a = math.radians(angle_deg)
+        return cls(x1, y1, x1 + length * math.cos(a), y1 + length * math.sin(a), thickness, **kw)
+
+    @property
+    def length(self) -> float:
+        return math.hypot(self.x2 - self.x1, self.y2 - self.y1)
+
+    @property
+    def angle_deg(self) -> float:
+        return math.degrees(math.atan2(self.y2 - self.y1, self.x2 - self.x1))
+
+    @property
+    def tangent(self) -> np.ndarray:
+        return np.array([self.x2 - self.x1, self.y2 - self.y1]) / self.length
+
+    @property
+    def normal(self) -> np.ndarray:
+        """왼쪽 법선 (단위벡터)."""
+        t = self.tangent
+        return np.array([-t[1], t[0]])
+
+    def local(self, X: np.ndarray, Y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """점 (X, Y) 의 막대 좌표: s = 끝점 1 에서 중심선을 따라간 거리, d = 왼쪽(+) 으로의 거리 [m]."""
+        t, n = self.tangent, self.normal
+        rx, ry = X - self.x1, Y - self.y1
+        return rx * t[0] + ry * t[1], rx * n[0] + ry * n[1]
+
+    def mask(self, X: np.ndarray, Y: np.ndarray) -> np.ndarray:
+        """점이 막대 안에 있는가 (셀 중심 기준 래스터화)."""
+        s_, d = self.local(X, Y)
+        return (s_ >= 0) & (s_ <= self.length) & (np.abs(d) <= self.thickness / 2)
+
+    def corners(self) -> np.ndarray:
+        """그리기용 네 꼭짓점 (4,2) [m]."""
+        p1, p2 = np.array([self.x1, self.y1]), np.array([self.x2, self.y2])
+        h = self.normal * self.thickness / 2
+        return np.array([p1 + h, p2 + h, p2 - h, p1 - h])
+
+    def min_thickness(self, dx: float) -> float:
+        """계단 근사에서 틈이 생기지 않는 최소 두께. 이웃 셀로 한 칸 갈 때 d 는 최대 dx·max(|n_x|,|n_y|) 변하므로
+        두께가 그보다 크면 막대를 가로지르는 유체 경로가 반드시 막대 셀을 지난다."""
+        n = self.normal
+        return dx * max(abs(n[0]), abs(n[1]))
+
+    def validate(self, index: int = 0) -> None:
+        tag = self.name or f"막대 {index + 1}"
+        vals = (self.x1, self.y1, self.x2, self.y2, self.thickness, self.amplitude, self.phase)
+        if not all(math.isfinite(v) for v in vals):
+            raise ConfigError(f"{tag}: NaN/inf 값이 있습니다.")
+        if self.length <= 0:
+            raise ConfigError(f"{tag}: 두 끝점이 같아 길이가 0 입니다.")
+        if self.thickness <= 0:
+            raise ConfigError(f"{tag}: 두께는 양수여야 합니다.")
+        if self.emit not in EMIT_SIDES:
+            raise ConfigError(f"{tag}: 방사면은 {EMIT_SIDES} 중 하나여야 합니다 (받은 값 {self.emit!r}).")
+        if self.amplitude < 0:
+            raise ConfigError(f"{tag}: 진폭은 0 이상이어야 합니다.")
+
+    @property
+    def emits(self) -> bool:
+        return self.emit != "none" and self.amplitude > 0
+
+
 @dataclass(frozen=True)
 class WaveConfig:
     medium: Medium = WATER
@@ -82,6 +172,7 @@ class WaveConfig:
     pml_order: int = 3
     solids: tuple[Rect, ...] = ()
     emitters: tuple[Emitter, ...] = ()
+    bars: tuple[Bar, ...] = ()
     max_cells: int = 2_000_000
     # FDTD 전용
     cfl: float = 0.5  # c dt / dx, 2D 안정 조건 ≤ 1/√2
@@ -112,7 +203,16 @@ class WaveConfig:
             raise ConfigError(f"CFL 안정 조건 위반: c·dt/dx = {self.cfl} > 1/√2 (2D). 0.5 정도를 쓰세요.")
         if self.avg_periods < 1 or self.pml_wavelengths <= 0 or self.max_periods < 1:
             raise ConfigError("평균 주기 수, 최대 주기 수, PML 두께는 양수여야 합니다.")
-        if not any(e.enabled and e.amplitude > 0 for e in self.emitters):
+        for i, b in enumerate(self.bars):
+            b.validate(i)
+            c = b.corners()
+            if c[:, 0].min() < x0 or c[:, 0].max() > x1 or c[:, 1].min() < y0 or c[:, 1].max() > y1:
+                raise ConfigError(f"{b.name or f'막대 {i + 1}'}: 계산 영역 밖으로 나갑니다. 영역을 넓히거나 막대를 옮기세요.")
+            if b.thickness <= 1.05 * b.min_thickness(self.dx):
+                raise ConfigError(
+                    f"{b.name or f'막대 {i + 1}'}: 두께 {b.thickness * 1000:.1f} mm 가 격자에 비해 너무 얇아 계단 근사에서 "
+                    f"틈이 생길 수 있습니다. {1.1 * b.min_thickness(self.dx) * 1000:.1f} mm 이상으로 하거나 파장당 셀 수를 늘리세요.")
+        if not (any(e.enabled and e.amplitude > 0 for e in self.emitters) or any(b.emits for b in self.bars)):
             raise ConfigError("켜진 방사면이 없습니다.")
         for e in self.emitters:
             if e.axis not in ("x", "y") or e.normal not in (1, -1) or e.span[1] <= e.span[0] or e.amplitude < 0:
@@ -211,13 +311,25 @@ def _setup(cfg: WaveConfig) -> _Grid:
     warns: list[str] = []
     edges = [v for r in cfg.solids for v in (r.x0, r.x1, r.y0, r.y1)]
     edges += [e.position for e in cfg.emitters if e.enabled]
+    for b in cfg.bars:  # 축에 나란한 막대만 '격자 맞춤 이동' 대상 (기울어진 막대는 아래에서 따로 안내)
+        if abs(b.angle_deg / 90 - round(b.angle_deg / 90)) <= 1e-9:
+            edges += [v for c in b.corners() for v in c]
     snap = max((abs(v / dx - round(v / dx)) * dx for v in edges), default=0.0)
     if snap > 1e-6 * dx:
         warns.append(f"형상 경계가 격자(셀 {dx * 1000:.1f} mm)에 맞춰 최대 {snap * 1000:.1f} mm 이동했습니다. "
                      "판 두께 등 치수를 셀 크기의 배수로 맞추면 사라집니다.")
+    XC, YC = np.meshgrid(xc, yc, indexing="ij")
     solid = np.zeros((nx, ny), bool)
     for r in cfg.solids:
         solid |= (xc[:, None] > r.x0) & (xc[:, None] < r.x1) & (yc[None, :] > r.y0) & (yc[None, :] < r.y1)
+    bar_masks = [b.mask(XC, YC) for b in cfg.bars]
+    for i, (b, m) in enumerate(zip(cfg.bars, bar_masks)):
+        if not m.any():
+            raise ConfigError(f"{b.name or f'막대 {i + 1}'}: 격자 셀을 하나도 덮지 않습니다 (너무 작음).")
+        solid |= m
+    if any(abs(b.angle_deg / 90 - round(b.angle_deg / 90)) > 1e-9 for b in cfg.bars):
+        warns.append(f"기울어진 막대는 격자(셀 {dx * 1000:.1f} mm) 위에서 계단 모양으로 근사됩니다. "
+                     "경계 위치 오차는 셀 크기 정도입니다.")
     pad = np.pad(solid, 1, constant_values=True)  # 격자 밖 = 강체 (PML 바깥 끝)
     fixed_x = pad[:-1, 1:-1] | pad[1:, 1:-1]  # x-면 i: 셀 i−1, i 중 하나라도 강체
     fixed_y = pad[1:-1, :-1] | pad[1:-1, 1:]
@@ -247,6 +359,34 @@ def _setup(cfg: WaveConfig) -> _Grid:
             counts[name] = len(is_)
         if counts[name] == 0:
             raise ConfigError(f"방사면 '{name}' 이 강체 표면과 맞지 않습니다 (한쪽은 강체, 반대쪽은 유체여야 함).")
+
+    # 막대 방사 면: 막대 셀과 유체 셀 사이의 계단 경계 면마다, 유체 쪽이 방사 면 쪽이고 끝 단면이 아니면
+    # 면 속도 = V n_side · e_축 (V = −iωξ0 e^{iφ}). 계단을 따라 합한 부피 유량이 실제 기울어진 면과 같다.
+    for i, (b, bm) in enumerate(zip(cfg.bars, bar_masks)):
+        if not b.emits:
+            continue
+        name = b.name or f"막대 {i + 1}"
+        V = -1j * omega * b.amplitude * np.exp(1j * b.phase)
+        n = b.normal
+        want_left, want_right = b.emit in ("left", "both"), b.emit in ("right", "both")
+        count = 0
+        for axis, g in ((0, gx), (1, gy)):
+            # 축 방향으로 이웃한 셀 쌍 (a, c): 면은 그 사이. g 의 내부 면 인덱스 = 셀 인덱스 + 1
+            sl_a = (slice(None, -1), slice(None)) if axis == 0 else (slice(None), slice(None, -1))
+            sl_c = (slice(1, None), slice(None)) if axis == 0 else (slice(None), slice(1, None))
+            g_in = g[1:-1] if axis == 0 else g[:, 1:-1]
+            for bar_sl, fl_sl in ((sl_a, sl_c), (sl_c, sl_a)):  # 막대가 앞/뒤 셀인 두 경우
+                cand = bm[bar_sl] & ~solid[fl_sl]
+                s_, d = b.local(XC[fl_sl], YC[fl_sl])
+                cand &= (s_ >= 0) & (s_ <= b.length) & (g_in == 0)
+                left = cand & (d > 0) & want_left
+                right = cand & (d < 0) & want_right
+                g_in[left] = V * n[axis]
+                g_in[right] = -V * n[axis]
+                count += int(left.sum() + right.sum())
+        counts[name] = count
+        if count == 0:
+            raise ConfigError(f"{name}: 방사 면이 유체에 닿지 않습니다 (다른 막대에 가려졌거나 방사면 선택 확인).")
 
     sigma_max = (cfg.pml_order + 1) * c * math.log(1 / cfg.pml_reflection) / (2 * n_pml * dx)
     lo_x, hi_x, lo_y, hi_y = cfg.pml_sides
@@ -464,6 +604,20 @@ class PocketSpec:
             Emitter("y", -h, (0.0, L), +1, self.bottom[1], self.bottom[2], self.bottom[0], "아랫판 (+y 방사)"),
         )
 
+    def bars(self) -> tuple[Bar, ...]:
+        """같은 형상을 막대 3개로 (프레임 편집기의 기본 예시). pocket_config 와 같은 해를 준다 (테스트로 확인)."""
+        h, t, L, bd = self.gap / 2, self.thickness, self.length, self.body_depth
+
+        def side(spec, which):
+            on, amp, ph = spec
+            return dict(emit=which if on and amp > 0 else "none", amplitude=amp, phase=ph)
+
+        return (
+            Bar(-bd / 2, -h - t, -bd / 2, h + t, bd, name="뒷벽 (AUV 몸체)", **side(self.back, "right")),
+            Bar(0.0, h + t / 2, L, h + t / 2, t, name="윗판", **side(self.top, "right")),
+            Bar(0.0, -h - t / 2, L, -h - t / 2, t, name="아랫판", **side(self.bottom, "left")),
+        )
+
     def cutoff_frequencies(self, c: float, f_max: float) -> list[float]:
         """판 사이 횡모드 차단 주파수 f_m = m c / (2D), m = 1.. (f_max 이하). 이 근처에서 공진."""
         return [m * c / (2 * self.gap) for m in range(1, int(2 * self.gap * f_max / c) + 1)]
@@ -471,6 +625,67 @@ class PocketSpec:
 
 def pocket_config(spec: PocketSpec, **kw) -> WaveConfig:
     return WaveConfig(solids=spec.solids(), emitters=spec.emitters(), **kw)
+
+
+def frame_config(bars, **kw) -> WaveConfig:
+    """막대 목록으로 만든 로봇 프레임."""
+    return WaveConfig(bars=tuple(bars), **kw)
+
+
+def parallel_gaps(bars, angle_tol_deg: float = 5.0) -> list[tuple[str, str, float]]:
+    """서로 마주 보는 거의 평행한 막대 쌍과 그 사이 간격 [m] (두께 제외). 횡모드 공진 경고용.
+
+    조건: 방향 차이 < angle_tol_deg, 중심선 투영 구간이 겹침, 간격 > 0."""
+    out = []
+    for i, a in enumerate(bars):
+        for j in range(i + 1, len(bars)):
+            b = bars[j]
+            diff = abs((a.angle_deg - b.angle_deg + 90) % 180 - 90)
+            if diff > angle_tol_deg:
+                continue
+            sb, db = a.local(np.array([b.x1, b.x2]), np.array([b.y1, b.y2]))
+            if min(sb.max(), a.length) <= max(sb.min(), 0.0):
+                continue  # 길이 방향으로 겹치지 않음
+            gap = abs(db.mean()) - (a.thickness + b.thickness) / 2
+            if gap > 0:
+                out.append((a.name or f"막대 {i + 1}", b.name or f"막대 {j + 1}", float(gap)))
+    return out
+
+
+@dataclass(frozen=True)
+class FramePreset:
+    title: str
+    bars: tuple[Bar, ...]
+    domain: tuple[float, float, float, float]
+    reference: tuple[float, float]  # 거리 통계 기준점 (보통 입구 중심) [m]
+    forward_deg: float  # 기준점에서 '앞쪽' 방향 (x 축에서 반시계, 도)
+
+
+def frame_presets() -> dict[str, FramePreset]:
+    """프레임 편집기 예시. 모두 물 (c = 1500 m/s) 기준 치수."""
+    box = PocketSpec()
+    pi2 = math.pi / 2
+    v_frame = (
+        Bar(-0.3, -0.5, -0.3, 0.5, 0.6, "right", 1e-5, 0.0, "뒷벽 (AUV 몸체)"),
+        Bar.from_polar(0.0, 0.55, 20.0, 1.1, 0.1, emit="right", amplitude=1e-5, phase=pi2, name="윗판 (20° 벌어짐)"),
+        Bar.from_polar(0.0, -0.55, -20.0, 1.1, 0.1, emit="left", amplitude=1e-5, phase=pi2, name="아랫판 (−20° 벌어짐)"),
+    )
+    fins = (
+        Bar(-0.3, -0.6, -0.3, 0.6, 0.6, "right", 1e-5, 0.0, "뒷벽 (AUV 몸체)"),
+        Bar(0.0, 0.65, 1.2, 0.65, 0.1, "right", 1e-5, pi2, "윗판"),
+        Bar(0.0, -0.65, 1.2, -0.65, 0.1, "left", 1e-5, pi2, "아랫판"),
+        Bar.from_polar(0.5, 0.25, 30.0, 0.3, 0.06, name="안쪽 지느러미 1 (벽)"),
+        Bar.from_polar(0.5, -0.25, -30.0, 0.3, 0.06, name="안쪽 지느러미 2 (벽)"),
+    )
+    single = (Bar.from_polar(0.0, -0.5, 60.0, 1.0, 0.1, emit="right", amplitude=1e-5, name="기울어진 판 하나 (60°)"),)
+    return {
+        "box": FramePreset("기본 품 (막대 3개, 깊이 1 m × 간격 1 m)", box.bars(), (-1.0, 5.0, -3.0, 3.0),
+                           (box.length, 0.0), 0.0),
+        "v": FramePreset("기울어진 V자 프레임 (판 ±20°)", v_frame, (-1.0, 5.0, -3.0, 3.0), (1.03, 0.0), 0.0),
+        "fins": FramePreset("품 + 안쪽 비스듬한 지느러미 2개", fins, (-1.0, 5.0, -3.0, 3.0), (1.2, 0.0), 0.0),
+        "single": FramePreset("기울어진 판 하나 (60°, 오른쪽 면 방사)", single, (-1.5, 3.5, -2.5, 2.5),
+                              (0.25, -0.07), -30.0),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +715,8 @@ def wave_metrics(res: WaveResult, medium: Medium, settings=None) -> dict:
 
 
 def radial_ellipticity(res: WaveResult, met: dict, center: tuple[float, float], wavelength: float,
-                       edges_lambda=(0, 1, 2, 4, 8), half_plane_x: float | None = None) -> list[dict]:
+                       edges_lambda=(0, 1, 2, 4, 8), half_plane_x: float | None = None,
+                       forward_deg: float | None = None) -> list[dict]:
     """center 로부터 거리 구간별 타원도 통계. half_plane_x 를 주면 x > half_plane_x 인 셀만 (품 앞쪽).
 
     반환 각 구간: lo, hi [λ], n (셀 수), e_median, e_energy (|I| 가중 평균), frac_e03 (e > 0.3 비율),
@@ -512,12 +728,15 @@ def radial_ellipticity(res: WaveResult, met: dict, center: tuple[float, float], 
     X, Y = np.meshgrid(res.xc, res.yc, indexing="ij")
     r = np.hypot(X - center[0], Y - center[1]) / wavelength
     # 고리 면적 대비 영역 안 셀 비율 (강체 포함해서 셈 → 순수하게 영역 잘림만 반영)
-    geo = np.ones_like(r, bool) if half_plane_x is None else X > half_plane_x
-    cell_area = (res.dx / wavelength) ** 2
-    frac = 0.5 if half_plane_x is not None else 1.0
-    base = np.isfinite(met["e"])
+    geo = np.ones_like(r, bool)
     if half_plane_x is not None:
-        base &= X > half_plane_x
+        geo &= X > half_plane_x
+    if forward_deg is not None:  # 기준점에서 forward 방향 반평면 (기울어진 프레임용)
+        a = math.radians(forward_deg)
+        geo &= (X - center[0]) * math.cos(a) + (Y - center[1]) * math.sin(a) > 0
+    cell_area = (res.dx / wavelength) ** 2
+    frac = 0.5 if (half_plane_x is not None or forward_deg is not None) else 1.0
+    base = np.isfinite(met["e"]) & geo
     Imag = np.linalg.norm(np.nan_to_num(met["I"]), axis=-1)
     rows = []
     for lo, hi in zip(edges_lambda[:-1], edges_lambda[1:]):

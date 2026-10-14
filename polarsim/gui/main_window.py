@@ -162,7 +162,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._load_guide(guide_path)
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(engine_a, "엔진 A: 평면파 중첩")
-        self.tabs.addTab(self.wave_tab, "엔진 B: AUV 품 방사 (벽·회절)")
+        self.tabs.addTab(self.wave_tab, "엔진 B: 로봇 프레임 방사 (벽·회절)")
         self.tabs.addTab(self.help, "도움말")
         self.setCentralWidget(self.tabs)
         self.statusBar().showMessage("프리셋을 불러오거나 소스를 편집한 뒤 [계산 실행] 을 누르세요.")

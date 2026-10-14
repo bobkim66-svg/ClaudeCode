@@ -32,7 +32,9 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 -OneFile   # dist\polarsim.
 | `polarsim/physics.py` | 엔진 A: 평면파/가우시안 빔 해석적 중첩, 수치 회전 검증 |
 | `polarsim/metrics.py` | 시간창, 궤적 지표 (L, e, 평면성, T), 실행 |
 | `polarsim/presets.py` | 프리셋 3종과 예상 결과 |
-| `polarsim/fdtd.py` | 엔진 B: 2D 벽·반사·회절 (주파수 영역 정상상태 + FDTD 교차검증), AUV 품 형상 |
+| `polarsim/fdtd.py` | 엔진 B: 2D 벽·반사·회절 (주파수 영역 정상상태 + FDTD 교차검증), 임의 각도 막대 프레임 |
+| `polarsim/gui/frame_editor.py` | 엔진 B 로봇 프레임(막대) 편집기 |
+| `polarsim/display.py` | 화면 뭉침 정도 (면적비) 와 시각 배율 계산 |
 | `polarsim/export.py` | CSV / JSON / 요약 저장 |
 | `polarsim/gui/` | PySide6 + pyqtgraph GUI |
 | `polarsim/app.py` | 진입점, 로그, 예외 대화상자, `--selftest` |
