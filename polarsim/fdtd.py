@@ -429,48 +429,89 @@ def solve_harmonic(cfg: WaveConfig, omega_eff: float | None = None) -> WaveResul
     셀: (σ_c − iω) p_x = −ρc² ∂x vx (y 도 같음) → p = −b_x Δvx/dx − b_y Δvy/dx,  b = ρc²/(σ_c − iω)
     omega_eff: 이산 연산자에 넣는 각주파수 (기본 = 물리 ω). FDTD 와 비교할 때 도약법의 2 sin(ωdt/2)/dt 를 넣는다.
     """
-    from scipy.sparse import coo_matrix
     from scipy.sparse.linalg import spsolve
 
     g = _setup(cfg)
-    rho, c = cfg.medium.rho, cfg.medium.c
-    omega = 2 * math.pi * cfg.frequency
-    w = omega if omega_eff is None else omega_eff
-    nx, ny, dx = g.nx, g.ny, g.dx
-    a_x = (1.0 / (rho * (g.sx_f - 1j * w))) * g.free_x  # (nx+1, ny), 고정 면은 0
-    a_y = (1.0 / (rho * (g.sy_f - 1j * w))) * g.free_y
-    b_x = rho * c**2 / (g.sx_c - 1j * w)  # (nx,1)
-    b_y = rho * c**2 / (g.sy_c - 1j * w)  # (1,ny)
-    b_x = np.broadcast_to(b_x, (nx, ny))
-    b_y = np.broadcast_to(b_y, (nx, ny))
-    h2 = dx * dx
+    op = _HarmonicOperator(g, cfg, 2 * math.pi * cfg.frequency if omega_eff is None else omega_eff)
+    P = spsolve(op.A, op.rhs(g)).reshape(g.nx, g.ny)
+    return op.result(g, cfg, P)
 
-    idx = np.arange(nx * ny).reshape(nx, ny)
-    aL, aR = a_x[:-1], a_x[1:]  # 셀 i 의 왼쪽/오른쪽 면
-    aB, aT = a_y[:, :-1], a_y[:, 1:]
-    diag = 1.0 + (b_x * (aL + aR) + b_y * (aB + aT)) / h2
-    rows, cols, vals = [idx.ravel()], [idx.ravel()], [diag.ravel()]
 
-    def off(mask_coef, shift_rows, shift_cols):
-        rows.append(shift_rows.ravel())
-        cols.append(shift_cols.ravel())
-        vals.append(mask_coef.ravel())
+class _HarmonicOperator:
+    """주파수 영역 연립방정식 A p = rhs. A 는 형상(강체)·매질·PML·ω 로만 정해지고 방사면과 무관하다.
+    그래서 방사면만 다른 여러 문제는 A 를 한 번 분해(LU) 해서 우변만 바꿔 풀 수 있다 (solve_harmonic_basis)."""
 
-    off(-(b_x * aR)[:-1] / h2, idx[:-1], idx[1:])  # 오른쪽 이웃
-    off(-(b_x * aL)[1:] / h2, idx[1:], idx[:-1])  # 왼쪽 이웃
-    off(-(b_y * aT)[:, :-1] / h2, idx[:, :-1], idx[:, 1:])
-    off(-(b_y * aB)[:, 1:] / h2, idx[:, 1:], idx[:, :-1])
-    rhs = -(b_x * (g.gx[1:] - g.gx[:-1]) + b_y * (g.gy[:, 1:] - g.gy[:, :-1])) / dx
-    # 강체 셀: p = 0 (항등 행). 강체 셀 행의 비대각 성분은 aL..aT 가 모두 0 이라 이미 0.
-    rhs = np.where(g.solid, 0.0, rhs)
-    A = coo_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(nx * ny,) * 2)
-    P = spsolve(A.tocsc(), rhs.ravel()).reshape(nx, ny)
+    def __init__(self, g: _Grid, cfg: WaveConfig, w: float):
+        from scipy.sparse import coo_matrix
 
-    Fx = g.gx.copy()
-    Fy = g.gy.copy()
-    Fx[1:-1] += -a_x[1:-1] * (P[1:] - P[:-1]) / dx
-    Fy[:, 1:-1] += -a_y[:, 1:-1] * (P[:, 1:] - P[:, :-1]) / dx
-    return _result("harmonic", g, cfg, omega, P, Fx, Fy)
+        rho, c = cfg.medium.rho, cfg.medium.c
+        self.omega = 2 * math.pi * cfg.frequency
+        nx, ny, dx = g.nx, g.ny, g.dx
+        self.dx = dx
+        self.a_x = (1.0 / (rho * (g.sx_f - 1j * w))) * g.free_x  # (nx+1, ny), 고정 면은 0
+        self.a_y = (1.0 / (rho * (g.sy_f - 1j * w))) * g.free_y
+        self.b_x = np.broadcast_to(rho * c**2 / (g.sx_c - 1j * w), (nx, ny))  # (nx,1) → (nx,ny)
+        self.b_y = np.broadcast_to(rho * c**2 / (g.sy_c - 1j * w), (nx, ny))
+        b_x, b_y = self.b_x, self.b_y
+        h2 = dx * dx
+        idx = np.arange(nx * ny).reshape(nx, ny)
+        aL, aR = self.a_x[:-1], self.a_x[1:]  # 셀 i 의 왼쪽/오른쪽 면
+        aB, aT = self.a_y[:, :-1], self.a_y[:, 1:]
+        diag = 1.0 + (b_x * (aL + aR) + b_y * (aB + aT)) / h2
+        rows, cols, vals = [idx.ravel()], [idx.ravel()], [diag.ravel()]
+
+        def off(mask_coef, shift_rows, shift_cols):
+            rows.append(shift_rows.ravel())
+            cols.append(shift_cols.ravel())
+            vals.append(mask_coef.ravel())
+
+        off(-(b_x * aR)[:-1] / h2, idx[:-1], idx[1:])  # 오른쪽 이웃
+        off(-(b_x * aL)[1:] / h2, idx[1:], idx[:-1])  # 왼쪽 이웃
+        off(-(b_y * aT)[:, :-1] / h2, idx[:, :-1], idx[:, 1:])
+        off(-(b_y * aB)[:, 1:] / h2, idx[:, 1:], idx[:, :-1])
+        # 강체 셀: p = 0 (항등 행). 강체 셀 행의 비대각 성분은 aL..aT 가 모두 0 이라 이미 0.
+        self.A = coo_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+                            shape=(nx * ny,) * 2).tocsc()
+
+    def rhs(self, g: _Grid) -> np.ndarray:
+        r = -(self.b_x * (g.gx[1:] - g.gx[:-1]) + self.b_y * (g.gy[:, 1:] - g.gy[:, :-1])) / self.dx
+        return np.where(g.solid, 0.0, r).ravel()
+
+    def result(self, g: _Grid, cfg: WaveConfig, P: np.ndarray) -> WaveResult:
+        dx = self.dx
+        Fx = g.gx.copy()
+        Fy = g.gy.copy()
+        Fx[1:-1] += -self.a_x[1:-1] * (P[1:] - P[:-1]) / dx
+        Fy[:, 1:-1] += -self.a_y[:, 1:-1] * (P[:, 1:] - P[:, :-1]) / dx
+        return _result("harmonic", g, cfg, self.omega, P, Fx, Fy)
+
+
+def solve_harmonic_basis(cfg: WaveConfig, progress=None) -> list[WaveResult]:
+    """방사하는 막대마다 '그 막대 하나만 방사' 한 해를 구한다 (나머지 막대는 같은 자리의 강체 벽).
+
+    선형이므로 아무 진폭·위상 조합의 해 = Σ_k w_k · 해_k (중첩 원리). 형상이 같아 행렬 A 가 같으므로
+    한 번만 LU 분해하고 우변만 바꿔 푼다 (막대 수만큼 따로 푸는 것보다 훨씬 빠름).
+    반환 순서 = cfg.bars 중 b.emits 인 막대 순서. progress(k, n) 가 있으면 각 해 뒤에 부른다.
+    """
+    from dataclasses import replace
+
+    from scipy.sparse.linalg import splu
+
+    emitting = [i for i, b in enumerate(cfg.bars) if b.emits]
+    if not emitting:
+        raise ConfigError("켜진 방사면이 없습니다.")
+    g0 = _setup(cfg)
+    op = _HarmonicOperator(g0, cfg, 2 * math.pi * cfg.frequency)
+    lu = splu(op.A)
+    out = []
+    for n, k in enumerate(emitting):
+        bars = tuple(b if i == k else replace(b, emit="none") for i, b in enumerate(cfg.bars))
+        g = _setup(replace(cfg, bars=bars))
+        assert np.array_equal(g.solid, g0.solid)  # 방사면 설정은 형상을 바꾸지 않는다 → 같은 A
+        out.append(op.result(g, cfg, lu.solve(op.rhs(g)).reshape(g.nx, g.ny)))
+        if progress is not None:
+            progress(n + 1, len(emitting))
+    return out
 
 
 # ---------------------------------------------------------------------------
