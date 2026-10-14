@@ -296,11 +296,18 @@ def pyopengl_follow_qt_software_gl() -> str:
     P = plat.PLATFORM
     # import 때 install() 이 시스템 opengl32 로 계산해 캐시한 값 (GetCurrentContext, CurrentContextIsValid,
     # getExtensionProcedure, WGL 등) 을 모두 지우고, 새 라이브러리로 다시 install 한다.
-    for name in list(vars(P)):
-        if isinstance(getattr(type(P), name, None), baseplatform.lazy_property):
-            delattr(P, name)
+    # 주의: lazy_property.__get__ 은 obj=None 처리가 없어 getattr(클래스, 이름) 으로는 판별이 안 된다 → 클래스 __dict__ 로 찾음
+    def is_lazy(name):
+        return any(isinstance(k.__dict__.get(name), baseplatform.lazy_property) for k in type(P).__mro__)
+
+    for name in [n for n in vars(P) if is_lazy(n)]:
+        delattr(P, name)
     P.GL = lib  # lazy_property 는 인스턴스 속성이 있으면 그것을 쓴다
     P.OpenGL = lib
+    current = lib.wglGetCurrentContext
+    current.restype = ctypes.c_void_p
+    P.GetCurrentContext = current  # 컨텍스트 확인 (contextdata) 이 쓰는 함수: 반드시 같은 DLL
+    P.CurrentContextIsValid = current
     P.install(vars(plat))
     addr = lambda f: ctypes.cast(f, ctypes.c_void_p).value  # noqa: E731
     same = addr(plat.GetCurrentContext) == addr(lib.wglGetCurrentContext)
