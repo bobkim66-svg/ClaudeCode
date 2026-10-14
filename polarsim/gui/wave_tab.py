@@ -20,17 +20,21 @@ from PySide6 import QtCore, QtWidgets
 
 from ..config import ConfigError, Medium
 from ..export import timestamped_dir
+from ..metrics import SMALL_AMPLITUDE_KA
 from ..fdtd import (PocketSpec, WaveConfig, WaveResult, emitted_power, pocket_config, radial_ellipticity,
                     solve_harmonic, wave_metrics)
+from ..display import CROSSING_AREA, area_ratio, emphasis_gain, gradient_scale
 from .views import MetricMap, PlaneView, TrajectoryView
 
 log = logging.getLogger(__name__)
 
 FRAME_MS = 33
 MAX_PARTICLES_PER_AXIS = 70  # 애니메이션 입자 수 상한 (축당)
-AUTO_GAIN_FRAC = 0.4
+DEFAULT_EMPHASIS_PCT = 60  # 자동 배율 목표 압축률 (display.py)
+CROSSING_WARN_FRAC = 0.01  # 겹쳐 보이는 입자가 이 비율을 넘으면 경고 (벽 모서리 몇 점은 허용)
 RADIAL_EDGES = (0, 1, 2, 4, 8, 16)  # 거리 구간 [λ]
 FULL_COVERAGE = 0.95  # 이 이상이면 거리 구간을 '완전히 덮음' 으로 본다
+RESONANCE_BAND = 0.15  # 차단 주파수 간격의 이 비율 안이면 공진 경고
 CAVITATION_PA = 1e5  # 수면 근처 정수압 ~1 bar. 이를 넘는 음압 진폭은 캐비테이션 위험 (수심에 따라 다름)
 MAPS = {
     "e": ("타원도 e = √(λ2/λ1)", (0.0, 1.0)),
@@ -221,12 +225,20 @@ class WaveTab(QtWidgets.QWidget):
         self.flow.toggled.connect(self._update_map)
         self.auto_gain = QtWidgets.QCheckBox("자동")
         self.auto_gain.setChecked(True)
+        self.emphasis = QtWidgets.QSpinBox()
+        self.emphasis.setRange(5, 150)
+        self.emphasis.setValue(DEFAULT_EMPHASIS_PCT)
+        self.emphasis.setSuffix(" % 뭉침 강도")
+        self.emphasis.setToolTip("자동 배율에서 화면 면적이 최대 몇 % 변할지 (뭉침·흩어짐 정도). 100% 근처부터 입자가 겹쳐 보입니다.")
+        self.emphasis.valueChanged.connect(self._refresh_frame)
         self.gain_edit = _line("")
         self.gain_edit.setEnabled(False)
-        self.auto_gain.toggled.connect(lambda on: (self.gain_edit.setEnabled(not on), self._refresh_frame()))
+        self.auto_gain.toggled.connect(lambda on: (self.gain_edit.setEnabled(not on), self.emphasis.setEnabled(on),
+                                                   self._refresh_frame()))
         self.gain_edit.editingFinished.connect(self._refresh_frame)
         gr = QtWidgets.QHBoxLayout()
         gr.addWidget(self.auto_gain)
+        gr.addWidget(self.emphasis)
         gr.addWidget(self.gain_edit, 1)
         self.gain_note = QtWidgets.QLabel()
         self.gain_note.setWordWrap(True)
@@ -345,6 +357,20 @@ class WaveTab(QtWidgets.QWidget):
         self._u_scale = float(np.percentile(u_abs, 99)) if u_abs.size else 1.0  # 극단값 하나에 끌려가지 않게
         self._p_scale = float(np.percentile(p_abs, 99)) if p_abs.size else 1.0
         self._spacing = stride * res.dx
+        # 평면 내 변위 기울기 페이저 (중앙차분). 강체 셀과 그에 붙은 셀은 기울기가 의미 없으므로 제외.
+        G2 = np.empty(res.U.shape[:2] + (2, 2), complex)
+        for a in range(2):
+            gx, gy = np.gradient(res.U[..., a], res.dx)
+            G2[..., a, 0], G2[..., a, 1] = gx, gy
+        near_solid = res.solid.copy()
+        near_solid[1:] |= res.solid[:-1]
+        near_solid[:-1] |= res.solid[1:]
+        near_solid[:, 1:] |= res.solid[:, :-1]
+        near_solid[:, :-1] |= res.solid[:, 1:]
+        self._G2_sub = G2[self._sub]
+        self._grad_ok_sub = ~near_solid[self._sub]
+        # 99 백분위: 판 모서리의 회절 특이점 몇 개에 배율이 끌려가지 않게
+        self._grad_scale = gradient_scale([G2], ~near_solid, percentile=99)
         self.t_sim = 0.0
         ic = int(np.argmin(np.abs(res.xc - (b.spec.length + 2 * b.cfg.wavelength))))
         jc = int(np.argmin(np.abs(res.yc)))
@@ -357,7 +383,10 @@ class WaveTab(QtWidgets.QWidget):
 
     # ------------------------------------------------------------------ 표시
     def gain(self) -> float:
-        auto = AUTO_GAIN_FRAC * self._spacing / self._u_scale if self._u_scale > 0 else 1.0
+        if self._grad_scale > 0:
+            auto = emphasis_gain(self._grad_scale, self.emphasis.value() / 100)
+        else:
+            auto = 0.4 * self._spacing / self._u_scale if self._u_scale > 0 else 1.0
         if self.auto_gain.isChecked():
             self.gain_edit.setText(f"{auto:.4g}")
             return auto
@@ -379,11 +408,14 @@ class WaveTab(QtWidgets.QWidget):
         self.plane_view.set_frame(u[..., 0], u[..., 1], p, g, self._p_scale, n, "음압", "Pa")
         i, j = self.sel
         self.traj_view.set_current(np.r_[np.real(b.res.U[i, j] * rot), 0.0])
-        shown = g * self._u_scale / self._spacing
-        note = (f"화면 ×{g:.3g} 확대 (99% 입자의 실제 변위 ≤ {self._u_scale:.2g} m). 점 색 = 음압 (빨강 압축, 파랑 팽창).")
-        if shown > 0.5:
-            note = ("<span style='color:#c0392b'><b>주의:</b> 표시 변위가 입자 간격의 "
-                    f"{shown:.0%} — 입자가 겹쳐 보일 수 있습니다 (착시).</span><br>" + note)
+        area = area_ratio(np.real(self._G2_sub * rot), g)[self._grad_ok_sub]
+        note = (f"화면 ×{g:.3g} 확대 · 지금 화면 면적비 {np.percentile(area, 1):.0%} (뭉침) ~ "
+                f"{np.percentile(area, 99):.0%} (흩어짐), 1~99 백분위. 점 색 = 음압 (빨강 압축, 파랑 팽창). "
+                "입자는 평형점 주위로만 진동합니다.")
+        crossed = float(np.mean(area <= CROSSING_AREA))
+        if crossed > CROSSING_WARN_FRAC:
+            note = (f"<span style='color:#c0392b'><b>주의:</b> 입자 {crossed:.0%} 가 이웃과 겹치거나 지나쳐 보입니다 "
+                    "(착시). 뭉침 강도를 낮추세요.</span><br>" + note)
         self.gain_note.setText(note)
 
     def _tick(self) -> None:
@@ -474,11 +506,20 @@ class WaveTab(QtWidgets.QWidget):
             col = "#1e7d32" if abs(ratio - 1) < 0.03 else "#c0392b"
             L.append(f"<b>에너지 보존</b>: 방사 일률 {b.power_in:.3g} W/m, 경계 밖으로 나간 세기 {b.power_out:.3g} W/m "
                      f"(<span style='color:{col}'>비 {ratio:.3f}</span>)")
+        spacing = cfg.medium.c / (2 * spec.gap)  # 차단 주파수 간격 c/2D [Hz]
         cuts = spec.cutoff_frequencies(cfg.medium.c, cfg.frequency * 1.2)
-        near = [fc for fc in cuts if abs(fc - cfg.frequency) / fc < 0.05]
+        near = [fc for fc in cuts if abs(fc - cfg.frequency) < RESONANCE_BAND * spacing]
         if near:
+            m = round(near[0] / spacing)
+            mid = [(k + 0.5) * spacing for k in (m - 1, m)]
             L.append(f"<b style='color:#b9770e'>공진 주의</b>: 판 사이 횡모드 차단 주파수 {near[0]:.0f} Hz "
-                     f"(= m·c/2D) 근처입니다. 품 안 압력이 크게 증폭될 수 있고, 실제 구조에서는 손실이 이를 제한합니다.")
+                     f"(= {m}·c/2D) 근처입니다. 품 안 압력이 크게 증폭될 수 있고 (실제 구조에서는 손실이 제한), "
+                     f"정상상태까지 오래 걸립니다. 피하려면 두 차단 주파수의 가운데 ({mid[0]:.0f} 또는 {mid[1]:.0f} Hz) 를 쓰세요.")
+        ka = 2 * math.pi / lam * b.met["a_ref"]
+        if ka > SMALL_AMPLITUDE_KA:
+            L.append(f"<b style='color:#c0392b'>소진폭 가정 위반</b>: 최대 변위 {b.met['a_ref']:.3g} m, k·u = {ka:.3g} "
+                     f"(> {SMALL_AMPLITUDE_KA}). 선형 음향 결과가 물리적으로 의미가 없습니다. 화면 움직임을 키우려면 진폭이 아니라 "
+                     "'뭉침 강도' 를 올리세요.")
         pmax = float(np.nanmax(b.met["pabs"]))
         if pmax > CAVITATION_PA:
             L.append(f"<b style='color:#b9770e'>음압 크기</b>: 최대 {pmax:.3g} Pa ({pmax / 1e5:.1f} bar). 선형 모델 계산은 "

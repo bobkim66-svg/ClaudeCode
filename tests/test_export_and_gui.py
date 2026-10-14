@@ -113,15 +113,45 @@ def test_gui_bad_input_is_config_error(window):
         window.build_config()
 
 
-def test_gui_gain_overlap_warning(window):
-    window.load_preset("circular")
+def test_gui_emphasis_controls_bunching(window):
+    """자동 배율 = 목표 뭉침 강도. 정재파는 한 방향 압축이라 최소 면적비 = 1 − 강도 (정확)."""
+    from polarsim.display import area_ratio, frame_real
+
+    window.load_preset("standing")
     window.run_sync(window.build_config())
+    b = window.bundle
+    for pct in (30, 60, 90):
+        window.emphasis.setValue(pct)
+        g = window.gain()
+        amin = min(area_ratio(frame_real(b.G2, t), g).min() for t in np.arange(64) / 64e3)
+        assert amin == pytest.approx(1 - pct / 100, abs=0.02)
+    window.emphasis.setValue(60)
+    window._refresh_frame()
     assert "주의" not in window.gain_note.text()
-    window.auto_gain.setChecked(False)
-    r = window.bundle.result
-    window.gain_edit.setText(f"{0.8 * r.spacing / r.a_ref:g}")
+    window.emphasis.setValue(150)  # 면적비 < 0 → 입자가 지나쳐 보임
+    window.t_sim = 0.25e-3  # sin(ωt) = 1 인 순간 (정재파 최대 변형)
     window._refresh_frame()
     assert "착시" in window.gain_note.text()
+
+
+def test_gui_gain_independent_of_amplitude(window):
+    """진폭을 10배 키워도 자동 배율이 1/10 이 되어 화면 움직임은 같다."""
+    window.load_preset("circular")
+    window.run_sync(window.build_config())
+    g1 = window.gain()
+    for r in range(window.sources.table.rowCount()):
+        window.sources.table.item(r, 5).setText("1e-5")
+    window.run_sync(window.build_config())
+    assert window.gain() == pytest.approx(g1 / 10, rel=1e-9)
+
+
+def test_large_amplitude_warning():
+    from polarsim.metrics import simulate
+
+    r = simulate(SimConfig(sources=(Source(amplitude=10.0),), plane=ObservationPlane(nx=3, ny=3)))
+    assert any("소진폭" in w for w in r.warnings)
+    r = simulate(SimConfig(sources=(Source(amplitude=1e-6),), plane=ObservationPlane(nx=3, ny=3)))
+    assert not any("소진폭" in w for w in r.warnings)
 
 
 def test_gui_dimensionless_mode(window):

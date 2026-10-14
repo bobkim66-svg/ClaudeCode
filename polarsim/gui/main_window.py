@@ -13,6 +13,7 @@ from pyqtgraph.exporters import ImageExporter
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..config import ConfigError, Medium, ObservationPlane, SimConfig, TimeWindow
+from ..display import CROSSING_AREA, area_ratio, emphasis_gain, frame_real, gradient_scale, inplane_gradient
 from ..export import timestamped_dir, write_config_json, write_metrics_csv, write_summary
 from ..metrics import SimulationResult, simulate
 from ..physics import AnalyticField, Phasors, plane_basis
@@ -24,8 +25,7 @@ from .wave_tab import WaveTab
 log = logging.getLogger(__name__)
 
 FRAME_MS = 33  # 애니메이션 갱신 간격 (~30 fps)
-AUTO_GAIN_FRAC = 0.4  # 자동 배율: 최대 변위가 격자 간격의 40% 로 보이게
-OVERLAP_FRAC = 0.5  # 표시 변위가 격자 간격의 50% 를 넘으면 착시 경고
+DEFAULT_EMPHASIS_PCT = 60  # 자동 배율의 목표 압축률: 화면 면적이 최대 ±60% 변하도록 (display.py 참고)
 CURL_PASS = 1e-4  # 회전 검증 통과 기준 (차분 절단오차 ~7e-6 에 여유)
 EXPORT_WIDTH_PX = 1800  # PNG 저장 폭
 
@@ -57,17 +57,26 @@ class Bundle:
     su: np.ndarray  # (nx,ny) [m]
     sv: np.ndarray
     f_ref: float  # 애니메이션 기준 주파수 [Hz] (최저 활성 주파수)
+    G2: list  # [(ω, (P,2,2) complex)] 평면 내 변위 기울기 페이저 (화면 뭉침 계산용)
+    Pp: list  # [(ω, (P,) complex)] 음압 페이저 [Pa]
+    grad_scale: float  # max ‖∇u_∥‖ (무차원)
+    p_amp: float  # 최대 음압 진폭 상한 [Pa]
 
 
 def compute_bundle(config: SimConfig) -> Bundle:
     """GUI 와 무관한 계산 (작업 스레드에서 실행)."""
     result = simulate(config)
     field = AnalyticField(config.sources, config.medium)
-    phasors = field.phasors(result.points.reshape(-1, 3))
+    phasors = field.phasors(result.points.reshape(-1, 3), with_grad=True)
     basis = np.stack(plane_basis(config.plane))
     rel = result.points - np.asarray(config.plane.origin, float)
     f_ref = min(s.frequency for s in config.active_sources())
-    return Bundle(config, result, field, phasors, basis, rel @ basis[0], rel @ basis[1], f_ref)
+    G2 = [(f.omega, inplane_gradient(f.G, basis)) for f in phasors]
+    rc2 = config.medium.rho * config.medium.c**2
+    Pp = [(f.omega, -rc2 * f.D) for f in phasors]
+    p_amp = float(np.max(sum(np.abs(P) for _, P in Pp)))
+    return Bundle(config, result, field, phasors, basis, rel @ basis[0], rel @ basis[1], f_ref,
+                  G2, Pp, gradient_scale([g for _, g in G2]), p_amp)
 
 
 def _fmt(v: float, nd: int = 3) -> str:
@@ -258,14 +267,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self.map_box.currentIndexChanged.connect(self._update_map)
         self.flow = QtWidgets.QCheckBox("세기(에너지 흐름) 화살표")
         self.flow.toggled.connect(self._update_map)
+        self.color_box = QtWidgets.QComboBox()
+        self.color_box.addItem("음압 (빨강 = 압축·뭉침, 파랑 = 팽창·흩어짐)", "p")
+        self.color_box.addItem("평면 밖 변위", "n")
+        self.color_box.currentIndexChanged.connect(self._refresh_frame)
         self.auto_gain = QtWidgets.QCheckBox("자동")
         self.auto_gain.setChecked(True)
+        self.emphasis = QtWidgets.QSpinBox()
+        self.emphasis.setRange(5, 150)
+        self.emphasis.setValue(DEFAULT_EMPHASIS_PCT)
+        self.emphasis.setSuffix(" % 뭉침 강도")
+        self.emphasis.setToolTip("자동 배율에서 화면 면적이 최대 몇 % 변할지 (뭉침·흩어짐 정도). 100% 근처부터 입자가 겹쳐 보입니다.")
+        self.emphasis.valueChanged.connect(self._refresh_frame)
         self.gain_edit = QtWidgets.QLineEdit("")
         self.gain_edit.setEnabled(False)
-        self.auto_gain.toggled.connect(lambda on: (self.gain_edit.setEnabled(not on), self._refresh_frame()))
+        self.auto_gain.toggled.connect(lambda on: (self.gain_edit.setEnabled(not on), self.emphasis.setEnabled(on),
+                                                   self._refresh_frame()))
         self.gain_edit.editingFinished.connect(self._refresh_frame)
         gain_row = QtWidgets.QHBoxLayout()
         gain_row.addWidget(self.auto_gain)
+        gain_row.addWidget(self.emphasis)
         gain_row.addWidget(self.gain_edit, 1)
         self.gain_note = QtWidgets.QLabel()
         self.gain_note.setWordWrap(True)
@@ -283,6 +304,7 @@ class MainWindow(QtWidgets.QMainWindow):
         save.clicked.connect(self.export_dialog)
         fl.addRow("지표 맵", self.map_box)
         fl.addRow(self.flow)
+        fl.addRow("점 색", self.color_box)
         fl.addRow("시각 배율", gain_row)
         fl.addRow(self.gain_note)
         fl.addRow("재생", self.play_btn)
@@ -397,18 +419,25 @@ class MainWindow(QtWidgets.QMainWindow):
             f"계산 완료: 입자 {r.L.size}개, 시간 표본 {len(r.times)}개, 경고 {len(r.warnings)}건")
 
     # ------------------------------------------------------------------ 표시 갱신
+    def auto_gain_value(self) -> float:
+        """목표 뭉침 강도에 맞춘 배율. 기울기가 0 이면 (예: 1×1 격자) 최대 변위가 격자 간격의 40% 가 되게."""
+        b = self.bundle
+        if b.grad_scale > 0:
+            return emphasis_gain(b.grad_scale, self.emphasis.value() / 100)
+        return 0.4 * b.result.spacing / b.result.a_ref
+
     def gain(self) -> float:
         b = self.bundle
         if b is None:
             return 1.0
         if self.auto_gain.isChecked():
-            g = AUTO_GAIN_FRAC * b.result.spacing / b.result.a_ref
+            g = self.auto_gain_value()
             self.gain_edit.setText(f"{g:.4g}")
             return g
         try:
             g = float(self.gain_edit.text())
         except ValueError:
-            g = AUTO_GAIN_FRAC * b.result.spacing / b.result.a_ref
+            g = self.auto_gain_value()
             self.gain_edit.setText(f"{g:.4g}")
         return g
 
@@ -420,16 +449,21 @@ class MainWindow(QtWidgets.QMainWindow):
         r = b.result
         u = AnalyticField.frame(b.phasors, self.t_sim).reshape(r.L.shape + (3,))
         comp = u @ b.basis.T  # (nx,ny,3) 평면 기저 성분
-        self.plane_view.set_frame(comp[..., 0], comp[..., 1], comp[..., 2], g, r.a_ref, r.L.size)
+        if self.color_box.currentData() == "p":
+            cval = frame_real(b.Pp, self.t_sim).reshape(r.L.shape)
+            self.plane_view.set_frame(comp[..., 0], comp[..., 1], cval, g, b.p_amp, r.L.size, "음압", "Pa")
+        else:
+            self.plane_view.set_frame(comp[..., 0], comp[..., 1], comp[..., 2], g, r.a_ref, r.L.size)
         i, j = self.sel
         self.traj_view.set_current(comp[i, j])
-        ratio = r.a_ref / r.spacing
-        shown = g * r.a_ref / r.spacing
-        note = (f"실제 최대 변위 ≤ {r.a_ref:.3g} m = 격자 간격의 {ratio:.2e} 배. 화면은 ×{g:.3g} 확대. "
-                "입자는 평형점 주위로만 진동하며 이동하지 않습니다.")
-        if shown > OVERLAP_FRAC:
-            note = (f"<span style='color:#c0392b'><b>주의:</b> 표시 변위가 격자 간격의 {shown:.0%} 로 입자가 "
-                    "겹치거나 이동하는 것처럼 보일 수 있습니다 (착시).</span><br>" + note)
+        area = area_ratio(frame_real(b.G2, self.t_sim), g)
+        note = (f"화면 ×{g:.3g} 확대 · 지금 화면 면적비 {area.min():.0%} (뭉침) ~ {area.max():.0%} (흩어짐). "
+                f"실제 최대 변위 ≤ {r.a_ref:.3g} m (격자 간격의 {r.a_ref / r.spacing:.1e} 배) — 입자는 평형점 "
+                "주위로만 진동하며 이동하지 않습니다.")
+        crossed = float(np.mean(area <= CROSSING_AREA))
+        if crossed > 0:
+            note = (f"<span style='color:#c0392b'><b>주의:</b> 입자 {crossed:.0%} 가 이웃과 겹치거나 지나쳐 보입니다 "
+                    "(실제로는 일어나지 않는 착시). 뭉침 강도를 낮추세요.</span><br>" + note)
         self.gain_note.setText(note)
         periods = self.t_sim * b.f_ref
         self.time_label.setText(f"t = {self.t_sim:.4g} s ({periods:.2f} 주기, 기준 {b.f_ref:g} Hz)")

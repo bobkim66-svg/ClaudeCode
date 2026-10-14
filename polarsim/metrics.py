@@ -35,6 +35,8 @@ _MAX_DENOM = 1000
 _RATIO_TOL = 1e-9
 # 격자 간격 권장 상한 = 최소 파장 / 8 (공간 Nyquist 여유).
 SPACING_WARN_FRAC = 1.0 / 8.0
+# 소진폭(선형) 가정 한계: k·A 가 이보다 크면 경고 (변위 ≈ 파장의 1.6% 이상).
+SMALL_AMPLITUDE_KA = 0.1
 # 지표 계산 시 한 번에 처리하는 (시간 × 점) 원소 수 상한 (메모리 제한).
 _SERIES_CHUNK = 1_500_000
 
@@ -216,6 +218,13 @@ def config_warnings(config: SimConfig, points: np.ndarray, spacing: float | None
     """해석을 왜곡할 수 있는 설정에 대한 경고 (에러는 아님)."""
     warns = []
     lam = config.min_wavelength()
+    a_ref = sum(float(s.amplitude) for s in config.active_sources())
+    ka = 2 * np.pi / lam * a_ref
+    if ka > SMALL_AMPLITUDE_KA:
+        warns.append(
+            f"소진폭 가정 위반: k·A = {ka:.3g} (> {SMALL_AMPLITUDE_KA}). 변위 진폭 합 {a_ref:.3g} m 가 파장 {lam:.3g} m 에 "
+            "비해 너무 커서 선형 음향 결과가 물리적으로 의미가 없습니다. 진폭을 키워도 화면 움직임은 커지지 않습니다 "
+            "(자동 배율이 보정). 움직임을 키우려면 '뭉침 강도' 를 올리세요.")
     if spacing is not None and spacing > SPACING_WARN_FRAC * lam:
         warns.append(
             f"격자 간격 {spacing:.4g} m 가 최소 파장/8 ({lam / 8:.4g} m) 보다 큽니다. "
