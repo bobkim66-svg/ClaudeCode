@@ -20,6 +20,7 @@ import traceback
 from pathlib import Path
 
 APP_NAME = "polarsim"
+SOFTWARE_GL_STATUS = "해당 없음"  # main() 에서 설정 (자체진단 보고용)
 GUIDE_REL = Path("docs") / "USER_GUIDE_ko.md"
 log = logging.getLogger(APP_NAME)
 
@@ -256,6 +257,7 @@ def _selftest_3d(win, app, out_dir: Path, check) -> None:
         drawn = float(np.mean(np.any(np.abs(arr.astype(int) - np.array(BG)) > 12, axis=-1)))
     bundle = Path(getattr(sys, "_MEIPASS", ""))
     sw = sorted(str(p.relative_to(bundle)) for p in bundle.rglob("opengl32sw.dll")) if bundle.name else []
+    check("[3D] 소프트웨어 GL 연결 상태 (정보)", True, SOFTWARE_GL_STATUS)
     check("[3D] 3D 화면 렌더링 (OpenGL)", drawn > 0.05,
           f"그려진 픽셀 {drawn:.0%}, {renderer}, QT_OPENGL={os.environ.get('QT_OPENGL', '(기본)')}, "
           f"소프트웨어 GL DLL: {sw or '없음/소스 실행'}")
@@ -300,8 +302,9 @@ def pyopengl_follow_qt_software_gl() -> str:
     P.GL = lib  # lazy_property 는 인스턴스 속성이 있으면 그것을 쓴다
     P.OpenGL = lib
     P.install(vars(plat))
-    ok = plat.GetCurrentContext.__name__ == "wglGetCurrentContext" and P.GL is lib
-    return f"PyOpenGL → {dll} (재설치 {'확인' if ok else '확인 실패'})"
+    addr = lambda f: ctypes.cast(f, ctypes.c_void_p).value  # noqa: E731
+    same = addr(plat.GetCurrentContext) == addr(lib.wglGetCurrentContext)
+    return f"PyOpenGL → {dll}; GetCurrentContext 가 opengl32sw 함수: {same}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -318,10 +321,13 @@ def main(argv: list[str] | None = None) -> int:
     install_excepthook(log_path)
     log.info("start %s, python %s, frozen=%s, QT_OPENGL=%s", APP_NAME, sys.version.split()[0],
              getattr(sys, "frozen", False), os.environ.get("QT_OPENGL", "(기본)"))
+    global SOFTWARE_GL_STATUS
     try:
-        log.info("software GL: %s", pyopengl_follow_qt_software_gl())
-    except Exception:  # 실패해도 앱은 뜬다 (3D 화면은 안내문으로 대체됨)
+        SOFTWARE_GL_STATUS = pyopengl_follow_qt_software_gl()
+    except Exception as e:  # 실패해도 앱은 뜬다 (3D 화면은 안내문으로 대체됨)
+        SOFTWARE_GL_STATUS = f"전환 실패: {type(e).__name__}: {e}"
         log.exception("PyOpenGL 소프트웨어 GL 전환 실패")
+    log.info("software GL: %s", SOFTWARE_GL_STATUS)
     if args.selftest:
         return run_selftest(args.selftest, log_path)
 

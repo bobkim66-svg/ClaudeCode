@@ -67,8 +67,8 @@ try {
 # 진단 근거를 CI 로그에 바로 남긴다 (아티팩트를 받지 않아도 원인 확인 가능)
 $appLog = Join-Path $env:LOCALAPPDATA "polarsim\logs\polarsim.log"
 if (Test-Path $appLog) {
-    Write-Host "---- polarsim.log (마지막 60줄) ----" -ForegroundColor Cyan
-    Get-Content -Path $appLog -Encoding UTF8 -Tail 60 | Write-Host
+    Write-Host "---- polarsim.log (마지막 150줄) ----" -ForegroundColor Cyan
+    Get-Content -Path $appLog -Encoding UTF8 -Tail 150 | Write-Host
 }
 $hang = Join-Path $report "hang_traceback.txt"
 if ((Test-Path $hang) -and (Get-Item $hang).Length -gt 0) {
