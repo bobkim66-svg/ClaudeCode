@@ -1,0 +1,177 @@
+{
+  "name": "wreck_site",
+  "seed": 3,
+  "sonar": {
+    "max_range_m": 40.0,
+    "n_bins": 512,
+    "range_resolution_m": 0.08,
+    "horizontal_beamwidth_deg": 0.6,
+    "vertical_halfwidth_deg": 25.0,
+    "tilt_deg": 15.0,
+    "sidelobe_db": -25.0,
+    "absorption_db_per_m": 0.1,
+    "tvg_exponent": 40.0,
+    "beam_correction": true,
+    "ping_rate_hz": 15.0,
+    "ground_oversample": 4,
+    "render_chunk_pings": 64,
+    "min_along_sigma_pings": 0.3
+  },
+  "trajectory": {
+    "start_xy": [
+      0.0,
+      0.0
+    ],
+    "end_xy": [
+      50.0,
+      0.0
+    ],
+    "speed_mps": 1.5,
+    "altitude_m": 8.0,
+    "water_depth_m": 20.0,
+    "heave_amp_m": 0.15,
+    "heave_period_s": 6.0,
+    "roll_amp_deg": 1.5,
+    "roll_period_s": 5.0,
+    "pitch_amp_deg": 0.8,
+    "pitch_period_s": 7.0,
+    "yaw_amp_deg": 1.0,
+    "yaw_period_s": 12.0
+  },
+  "seabed": {
+    "grid_resolution_m": 0.05,
+    "roughness_rms_m": 0.12,
+    "roughness_beta": 3.5,
+    "roughness_cutoff_m": 30.0,
+    "ripple_amp_m": 0.03,
+    "ripple_wavelength_m": 0.8,
+    "ripple_direction_deg": 30.0,
+    "ripple_coverage": 0.15,
+    "regional_slope_deg": [
+      0.0,
+      0.0
+    ],
+    "sand_reflectivity": 1.0,
+    "mud_reflectivity": 0.3,
+    "gravel_reflectivity": 2.2,
+    "mud_fraction": 0.2,
+    "gravel_fraction": 0.35,
+    "sediment_corr_m": 6.0,
+    "texture_shape": 8.0,
+    "texture_corr_m": 0.3,
+    "n_rocks": 40,
+    "rock_radius_m": [
+      0.2,
+      0.8
+    ],
+    "rock_reflectivity": 3.0,
+    "flat_patch": null,
+    "object_specular_width_deg": 10.0
+  },
+  "objects": [
+    {
+      "kind": "box",
+      "x": 25.0,
+      "y": 18.0,
+      "length": 12.0,
+      "width": 3.0,
+      "height": 1.6,
+      "heading_deg": 35.0,
+      "burial_m": 0.0,
+      "reflectivity": 5.0,
+      "specular": 30.0,
+      "name": "hull"
+    },
+    {
+      "kind": "box",
+      "x": 24.0,
+      "y": 17.3,
+      "length": 4.0,
+      "width": 2.0,
+      "height": 2.8,
+      "heading_deg": 35.0,
+      "burial_m": 0.0,
+      "reflectivity": 5.0,
+      "specular": 30.0,
+      "name": "deckhouse"
+    },
+    {
+      "kind": "cylinder",
+      "x": 30.0,
+      "y": 21.5,
+      "length": 3.0,
+      "width": 0.5,
+      "height": 0.6,
+      "heading_deg": 35.0,
+      "burial_m": 0.0,
+      "reflectivity": 6.0,
+      "specular": 30.0,
+      "name": "mast"
+    },
+    {
+      "kind": "box",
+      "x": 19.0,
+      "y": 10.0,
+      "length": 0.8,
+      "width": 0.6,
+      "height": 0.4,
+      "heading_deg": 10,
+      "burial_m": 0.0,
+      "reflectivity": 4.0,
+      "specular": 15.0,
+      "name": "debris"
+    },
+    {
+      "kind": "box",
+      "x": 21.5,
+      "y": 9.0,
+      "length": 0.8,
+      "width": 0.6,
+      "height": 0.4,
+      "heading_deg": 70,
+      "burial_m": 0.0,
+      "reflectivity": 4.0,
+      "specular": 15.0,
+      "name": "debris"
+    },
+    {
+      "kind": "box",
+      "x": 33.0,
+      "y": 14.0,
+      "length": 0.8,
+      "width": 0.6,
+      "height": 0.4,
+      "heading_deg": 120,
+      "burial_m": 0.0,
+      "reflectivity": 4.0,
+      "specular": 15.0,
+      "name": "debris"
+    },
+    {
+      "kind": "box",
+      "x": 16.0,
+      "y": 22.0,
+      "length": 0.8,
+      "width": 0.6,
+      "height": 0.4,
+      "heading_deg": 40,
+      "burial_m": 0.0,
+      "reflectivity": 4.0,
+      "specular": 15.0,
+      "name": "debris"
+    }
+  ],
+  "noise": {
+    "speckle": true,
+    "n_looks": 1,
+    "snr_far_db": 18.0,
+    "surface_return_db": -12.0,
+    "multipath_db": -18.0,
+    "volume_scatter_db": -12.0,
+    "n_fish": 6,
+    "fish_level_db": 15.0,
+    "interference_prob": 0.0,
+    "interference_db": 8.0,
+    "dropout_prob": 0.0
+  }
+}
