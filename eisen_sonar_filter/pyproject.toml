@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eisen_sonar_filter"
+version = "0.1.0"
+description = "아이젠슈타인 정수 / 가우스 합 기반 소나 스페클 필터 (연구용 프로토타입)"
+requires-python = ">=3.11"
+dependencies = ["numpy>=2.0", "scipy>=1.14", "scikit-image>=0.24", "matplotlib>=3.9"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["eisen_sonar*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
