@@ -12,6 +12,17 @@ python examples/run_denoise_demo.py            # 약 1분, results/<타임스탬
 python examples/run_denoise_demo.py --smoke    # 빠른 점검
 ```
 
+## 내 영상(sonar_sim 결과)에 필터 적용
+
+```powershell
+python filter_sonar.py "C:\...\sonar_sim\results\<타임스탬프 폴더>"     # 폴더 안 *.npz 전부 처리
+python filter_sonar.py 파일.npz --methods B Lee Frost --window 7 --pfa 0.2
+```
+- 입력: sonar_sim 결과 `.npz` (권장) 또는 2D 선형 강도 `.npy`. PNG 는 dB/컬러맵이 입혀진 표시용이라 받지 않는다.
+- 출력: `results/filtered_<타임스탬프>/` 에 비교 그림 `*_compare.png`, 방법별 영상 `*_<방법>.png`, `*_filtered.npz`, `metrics.csv`.
+- 정답(`clean`)이 있으면 PSNR/SSIM/EPI 를 표시 영역(dB −18~+10 → [0,1], PNG 와 같은 스케일)에서 계산한다.
+  벤치마크(`run_denoise_demo.py`)의 진폭 영역 지표와 정의가 달라서 숫자를 직접 비교하면 안 된다.
+
 ## 구조
 
 | 파일 | 내용 |
