@@ -6,42 +6,64 @@
 
 - 1단계: 순수 로직 + mock 백엔드 + CLI
 - 2단계: **Gemini CLI 백엔드** (Google 공식 도구를 헤드리스로 호출, 브라우저 자동화 없음)
+- Windows 11 단일 exe 빌드 (Windows / Ubuntu 22.04 CI 에서 테스트)
 
 Python 코드는 표준 라이브러리만 사용한다. Gemini CLI 는 Node.js 20 이상이 필요하다.
 
-## Gemini CLI 준비 (최초 1회, Ubuntu 22.04)
+## 준비 (최초 1회, Windows 11 PowerShell)
 
-Ubuntu 22.04 기본 apt 의 nodejs 는 v12 라서 쓸 수 없다. nvm 등으로 Node 20+ 를 설치한다.
+1. Node.js LTS 설치 (Gemini CLI 는 Node 20 이상 필요). 설치 후 **PowerShell 을 새로 연다.**
 
-```bash
+```powershell
+winget install OpenJS.NodeJS.LTS
+```
+
+```powershell
 node --version
 ```
 
-```bash
+2. Gemini CLI 설치
+
+```powershell
 npm install -g @google/gemini-cli
 ```
 
-```bash
-gemini
+3. 로그인: 아래를 실행해 **"Sign in with Google"** 을 고르고 브라우저에서 로그인한 뒤 `/quit` 로 나온다.
+   (`gemini` 만 치면 "스크립트를 실행할 수 없으므로…" 오류가 날 수 있어 `gemini.cmd` 로 실행한다.)
+
+```powershell
+gemini.cmd
 ```
 
-마지막 명령은 대화형으로 열린다. 'Login with Google' 을 골라 브라우저에서 로그인한 뒤 `/quit` 로 나온다.
-로그인 정보는 `~/.gemini/` 에 저장되어 이후 헤드리스 호출에 그대로 쓰인다.
+4. 연결 확인 (fast/thinking 모델에 짧은 질문 1번씩). `확인(fast) 응답`, `확인(thinking) 응답` 이 나오면 성공.
 
-연결 확인 (fast/thinking 모델에 1번씩 짧은 질문):
-
-```bash
-cd gemini_council && python3 run_council.py --backend gemini-cli --check
+```powershell
+.\gemini_council.exe --backend gemini-cli --check
 ```
 
-토론 실행:
+## 토론 실행 (Windows)
 
-```bash
-python3 run_council.py --backend gemini-cli --topic "AUV 군집의 통신 두절 시 재집결 전략" --rounds 3
+```powershell
+.\gemini_council.exe --backend gemini-cli --topic "AUV 군집의 통신 두절 시 재집결 전략" --rounds 3
 ```
 
-Windows 11 (PowerShell) 도 같은 명령이며 `python3` 대신 `python` 을 쓴다.
-`gemini` 를 못 찾으면 `--gemini-cmd "C:\Users\<사용자>\AppData\Roaming\npm\gemini.cmd"` 처럼 경로를 준다.
+회의록은 실행한 폴더의 `logs\discussion_YYYYMMDD_HHMMSS.md` 에 저장된다.
+exe 대신 소스로 실행하려면 `gemini_council` 폴더에서 `python run_council.py ...` (같은 옵션).
+
+### exe 받기 / 만들기
+
+- 받기: GitHub 저장소 **Actions → gemini-council → 최근 성공한 실행 → Artifacts → gemini-council-windows-exe**
+- 직접 빌드 (Python 3.10+ 필요, 결과 `dist\gemini_council.exe`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+### Ubuntu 22.04 에서 쓸 때
+
+apt 의 nodejs 는 v12 라 쓸 수 없다. nvm 으로 Node 22 를 설치한 뒤 `npm install -g @google/gemini-cli`, `gemini` 로 로그인한다.
+실행은 `python3 run_council.py --backend gemini-cli ...`. 공용 PC 라면 로그인 토큰(`~/.gemini/oauth_creds.json`)을
+다른 사용자가 쓸 수 있으므로 본인 전용 리눅스 계정에서 쓰거나, 사용 후 그 파일을 지운다.
 
 ### 안전장치
 
@@ -85,6 +107,8 @@ python run_council.py --topic "AUV 군집의 통신 두절 시 재집결 전략"
 | `council/backends/mock.py` | 시드 고정 가짜 응답기 (종료·한도·타임아웃·오류 재현) |
 | `council/backends/gemini_cli.py` | Gemini CLI 헤드리스 호출, 출력 파싱, 한도/인증/타임아웃 분류, 사용량 표 |
 | `tests/fake_gemini.py` | 실제 CLI 의 입출력 규약을 흉내 낸 가짜 CLI (로그인 없이 테스트) |
+| `tests/test_platform.py` | npm 식 래퍼(gemini.cmd) 경유 호출, 타임아웃 시 손자 프로세스 종료 |
+| `build.ps1` | Windows 단일 exe 빌드 + 단독 실행 점검 |
 | `council/orchestrator.py` | 메인 루프, 일시정지/중단, 모든 종료 경로에서 회의록 저장 |
 | `council/transcript.py` | 회의록 마크다운 생성·저장 (UTF-8, 덮어쓰기 방지) |
 

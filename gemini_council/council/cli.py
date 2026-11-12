@@ -84,7 +84,15 @@ def run_check(backend: ChatBackend) -> int:
     return 0
 
 
+def _force_utf8_output() -> None:
+    """Windows 에서 출력을 파일/파이프로 보내면 cp949 등으로 인코딩되어 '⚠' 같은 문자에서 죽을 수 있다."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_output()
     parser = build_parser()
     args = parser.parse_args(argv)
     cfg = CouncilConfig(max_rounds=args.rounds, char_limit=args.char_limit, log_dir=args.log_dir)

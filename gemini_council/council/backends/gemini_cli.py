@@ -131,6 +131,27 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> BackendError:
 
 # ---------------------------------------------------------------- 프로세스 실행 (OS 분기는 여기 한 곳)
 
+WINDOWS_RUNNABLE = (".exe", ".cmd", ".bat", ".com")
+
+
+def resolve_executable(name: str, which: Callable[[str], str | None] = shutil.which,
+                       windows: bool = sys.platform == "win32") -> str | None:
+    """실행 파일 경로를 찾는다.
+
+    Windows 에서 npm 은 같은 폴더에 gemini (확장자 없는 sh 스크립트), gemini.cmd, gemini.ps1 을 만든다.
+    확장자 없는 파일이 잡히면 CreateProcess 가 실패(WinError 193)하므로 .cmd/.exe 를 우선한다.
+    """
+    if windows and Path(name).suffix.lower() not in WINDOWS_RUNNABLE:
+        for ext in WINDOWS_RUNNABLE:
+            found = which(name + ext)
+            if found:
+                return found
+    found = which(name)
+    if windows and found and Path(found).suffix.lower() not in WINDOWS_RUNNABLE:
+        return None  # 실행할 수 없는 파일 (sh 스크립트, .ps1 등)
+    return found
+
+
 def _kill_tree(proc: subprocess.Popen) -> None:
     """자식 프로세스 트리 전체 종료. Windows 의 gemini.cmd → node 처럼 손자 프로세스가 남는 것을 막는다."""
     if proc.poll() is not None:
@@ -190,7 +211,7 @@ class GeminiCliBackend(ChatBackend):
         self.calls: list[CallRecord] = []
 
     def _resolve_command(self) -> list[str]:
-        exe = shutil.which(self.cfg.command[0])
+        exe = resolve_executable(self.cfg.command[0])
         if exe is None:
             raise BackendError(
                 f"'{self.cfg.command[0]}' 명령을 찾을 수 없음. Node.js 20+ 설치 후 "

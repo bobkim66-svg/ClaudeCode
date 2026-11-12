@@ -4,6 +4,7 @@
   FAKE_GEMINI_MODE: ok | quota | quota_stdout | auth | hang | garbage | empty | downgrade | crash | noise
   FAKE_GEMINI_LOG:  호출마다 {"argv", "stdin", "cwd"} 를 JSON 한 줄로 추가 기록할 파일
   FAKE_GEMINI_END_AFTER: 사회자 호출이 이 횟수에 도달하면 응답 끝에 종료 토큰 추가
+  FAKE_GEMINI_PIDFILE: 자기 PID 를 기록할 파일 (타임아웃 시 손자 프로세스까지 종료되는지 확인용)
 """
 import json
 import os
@@ -13,6 +14,12 @@ from pathlib import Path
 
 
 def main() -> int:
+    # 실제 CLI(node)는 파이프에 UTF-8 로 쓴다. Windows 기본(cp1252/cp949)과 다르므로 맞춘다.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+    pidfile = os.environ.get("FAKE_GEMINI_PIDFILE")
+    if pidfile:
+        Path(pidfile).write_text(str(os.getpid()), encoding="utf-8")
     argv = sys.argv[1:]
     stdin = sys.stdin.buffer.read().decode("utf-8")
     mode = os.environ.get("FAKE_GEMINI_MODE", "ok")
