@@ -17,7 +17,13 @@ from .base import ChatBackend, UserAbort
 
 # 프로그램이 만든 프롬프트에만 있는 표시. 답변 대신 보낸 메시지를 복사했는지 판별에 쓴다.
 # (protocol.py 의 문구와 어긋나면 tests/test_manual.py 가 잡는다)
-PROMPT_MARKERS = ("[토론 규칙]", "[지난 발언 이후 새 발언]", "의 차례입니다.")
+PROMPT_MARKERS = ("[토론 규칙]", "[지난 발언 이후 새 발언]", "의 차례입니다.", "[새 토론 시작")
+
+# 같은 탭을 여러 토론에 재활용하므로, 이번 실행에서 각 탭의 첫 메시지 앞에 붙여 이전 대화를 무시하게 한다.
+# (지시에 의한 리셋일 뿐 이전 내용은 Gemini 맥락에 남아 있다 → 완전한 리셋은 새 채팅)
+RESET_PREFIX = ("[새 토론 시작 — 이전 대화 무시]\n"
+                "이 채팅의 위쪽 내용은 이전 토론입니다. 이전 주제·결론·역할 지시를 모두 잊고, "
+                "이 메시지의 주제와 규칙만 따르세요. 이전 토론을 언급하거나 이어 쓰지 마세요.\n\n")
 
 
 @dataclass(frozen=True)
@@ -93,6 +99,7 @@ class ManualRelayBackend(ChatBackend):
         self._tabs: dict[str, int] = {}
         self._last_reply: str | None = None
         self._last_issue: float | None = None  # 직전 메시지를 클립보드에 넣은 시각 [s]
+        self._reset_done: set[str] = set()       # 이번 실행에서 리셋 문구를 이미 보낸 탭
         self.turns: list[TurnRecord] = []
 
     def open(self, roles: tuple[Role, ...]) -> None:
@@ -104,7 +111,8 @@ class ManualRelayBackend(ChatBackend):
         for r in roles:
             hint = " (Pro/사고 모드 권장)" if r.model_hint == "thinking" else ""
             lines.append(f"   탭 {self._tabs[r.key]}: {r.name}{hint}")
-        lines += [" 진행 방법 (매 차례 반복):",
+        lines += [" 이전 토론에 쓰던 탭을 그대로 써도 됩니다 (각 탭 첫 메시지에 '새 토론 시작' 리셋 문구가 붙음).",
+                  " 진행 방법 (매 차례 반복):",
                   "   1) 안내된 탭에서 Ctrl+V, Enter",
                   "   2) 답변이 끝나면 답변 맨 아래 아이콘 줄(좋아요·싫어요·다시 생성·복사·더보기) 중 4번째 '겹친 네모' 복사 아이콘 클릭",
                   "      → 프로그램이 자동으로 다음 차례로 넘어감 (코드 블록 위의 복사 버튼, 내 질문의 복사 버튼 아님)",
@@ -117,6 +125,9 @@ class ManualRelayBackend(ChatBackend):
         assert self._clip is not None, "open() 전에 send() 호출됨"
         tab = self._tabs.get(role.key, 0)
         self._wait_turn_interval(tab, role.name)
+        if role.key not in self._reset_done:
+            prompt = RESET_PREFIX + prompt
+            self._reset_done.add(role.key)
         self._clip.set_text(prompt)
         self._last_issue = self._clock()
         baseline = self._clip.change_token()

@@ -16,6 +16,7 @@ from .clipboard import system_clipboard
 from .console import ConsoleCommands
 from .config import CouncilConfig
 from .orchestrator import Orchestrator
+from .session import SessionError, find_unfinished, load_state
 from .roles import AGENDAS, Role
 
 _GC = GeminiCliConfig()
@@ -24,7 +25,10 @@ _GC = GeminiCliConfig()
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="멀티 AI 구조화 토론")
     p.add_argument("--topic", help="토론 주제 (--check 가 아니면 필수)")
-    p.add_argument("--rounds", type=int, default=CouncilConfig.max_rounds, help="최대 라운드 수")
+    p.add_argument("--rounds", type=int, default=None,
+                   help=f"최대 라운드 수 (기본 {CouncilConfig.max_rounds}, 이어 하기면 저장된 값)")
+    p.add_argument("--resume", type=Path, default=None,
+                   help="중단된 토론 이어 하기: 회의록(.md) 또는 상태(.json) 경로")
     p.add_argument("--char-limit", type=int, default=CouncilConfig.char_limit, help="발언 권장 상한 [자]")
     p.add_argument("--log-dir", type=Path, default=Path("logs"), help="회의록 저장 폴더")
     p.add_argument("--backend", choices=["manual", "gemini-cli", "mock"], default="manual",
@@ -110,11 +114,35 @@ INTERACTIVE_DEFAULT_ROUNDS = 3  # 반자동은 라운드당 복사·붙여넣기
 INTERACTIVE_DEFAULT_INTERVAL_MIN = 5.0  # 차례 사이 최소 간격 [분] (학교망에서 Google 트래픽 확인 화면이 뜬 뒤 요청)
 
 
-def ask_interactive(read: Callable[[str], str] = input) -> list[str]:
-    """exe 를 더블클릭(인자 없음)했을 때 주제와 라운드를 물어 argv 를 만든다."""
+def _ask_interval(read: Callable[[str], str]) -> float:
+    interval = INTERACTIVE_DEFAULT_INTERVAL_MIN
+    while True:
+        raw = read(f"차례 사이 대기 시간(분) [Enter = {INTERACTIVE_DEFAULT_INTERVAL_MIN:g}]: ").strip()
+        if not raw:
+            return interval
+        try:
+            interval = float(raw)
+        except ValueError:
+            interval = -1.0
+        if interval >= 0:
+            return interval
+        print("  0 이상의 숫자를 입력하세요.")
+
+
+def ask_interactive(read: Callable[[str], str] = input, log_dir: Path = Path("logs")) -> list[str]:
+    """exe 를 더블클릭(인자 없음)했을 때 질문으로 argv 를 만든다. 중단된 토론이 있으면 이어 할지 먼저 묻는다."""
     print("=" * 64)
     print(" 멀티 AI 구조화 토론 (반자동 모드)")
     print("=" * 64)
+    pending = find_unfinished(log_dir)
+    if pending is not None:
+        data, _ = load_state(pending)
+        n = len(data["utterances"])
+        print(f" 중단된 토론이 있습니다: \"{data['topic']}\"")
+        print(f"   발언 {n}개 진행, 중단 사유: {data.get('stop_reason', '?')}, 파일: {pending.with_suffix('.md').name}")
+        if read("이어서 할까요? (y = 이어 하기, Enter = 새 토론): ").strip().lower() in ("y", "yes", "ㅛ"):
+            interval = _ask_interval(read)
+            return ["--backend", "manual", "--resume", str(pending), "--interval", f"{interval:g}"]
     topic = ""
     while not topic:
         topic = read("토론 주제를 입력하세요: ").strip()
@@ -130,18 +158,7 @@ def ask_interactive(read: Callable[[str], str] = input) -> list[str]:
             rounds = int(raw)
             break
         print("  1 이상의 숫자를 입력하세요.")
-    interval = INTERACTIVE_DEFAULT_INTERVAL_MIN
-    while True:
-        raw = read(f"차례 사이 대기 시간(분) [Enter = {INTERACTIVE_DEFAULT_INTERVAL_MIN:g}]: ").strip()
-        if not raw:
-            break
-        try:
-            interval = float(raw)
-        except ValueError:
-            interval = -1.0
-        if interval >= 0:
-            break
-        print("  0 이상의 숫자를 입력하세요.")
+    interval = _ask_interval(read)
     turns = 4 * rounds
     total_min = interval * (turns - 1)
     print(f"  → 최대 {rounds}라운드 = {turns}차례, 대기만 최대 약 {total_min:g}분 (+ Gemini 답변 시간)")
@@ -168,8 +185,21 @@ def run(argv: list[str], console: ConsoleCommands | None) -> int:
     args = parser.parse_args(argv)
     if args.clipboard_test:
         return clipboard_selftest()
-    cfg = CouncilConfig(max_rounds=args.rounds, char_limit=args.char_limit, log_dir=args.log_dir,
-                        agenda=AGENDAS[args.agenda])
+    resume = resume_json = None
+    if args.resume is not None:
+        try:
+            resume, resume_json = load_state(args.resume)
+        except SessionError as e:
+            print(f"이어 하기 실패: {e}")
+            return 1
+        # 주제·점검 항목·길이 상한은 저장된 값을 쓴다 (같은 토론이므로). 라운드는 --rounds 로 늘릴 수 있다.
+        args.topic = resume["topic"]
+        cfg = CouncilConfig(max_rounds=args.rounds or int(resume["max_rounds"]),
+                            char_limit=int(resume.get("char_limit", args.char_limit)),
+                            log_dir=resume_json.parent, agenda=tuple(resume.get("agenda", ())))
+    else:
+        cfg = CouncilConfig(max_rounds=args.rounds or CouncilConfig.max_rounds, char_limit=args.char_limit,
+                            log_dir=args.log_dir, agenda=AGENDAS[args.agenda])
     if args.backend == "manual" and console is None:
         console = ConsoleCommands()
     backend = make_backend(args, cfg, console)
@@ -178,7 +208,12 @@ def run(argv: list[str], console: ConsoleCommands | None) -> int:
     if not args.topic:
         parser.error("--topic 이 필요함")
 
-    result = Orchestrator(backend, args.topic, cfg, on_event=_log).run()
+    try:
+        orch = Orchestrator(backend, args.topic, cfg, on_event=_log, resume=resume, resume_json=resume_json)
+    except SessionError as e:
+        print(f"이어 하기 실패: {e}")
+        return 1
+    result = orch.run()
     print(f"결과: {result.reason.value}, 완료 라운드 {result.rounds_done}, 발언 {len(result.utterances)}개")
     if result.detail:
         print(f"상세: {result.detail}")

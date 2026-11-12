@@ -93,7 +93,8 @@ def test_send_puts_prompt_on_clipboard_and_returns_copied_reply():
     be, clip, user, out = _backend([("wait",), ("wait",), ("copy", "  답변입니다 ✓  ")])
     reply = be.send(C, "보낼 프롬프트\n[현재] 라운드 1/3, 비평가의 차례입니다.")
     assert reply == "답변입니다 ✓"
-    assert clip.history[0].startswith("보낼 프롬프트")       # 먼저 프롬프트를 클립보드에
+    assert clip.history[0].startswith("[새 토론 시작")      # 이번 실행에서 이 탭의 첫 메시지 → 리셋 문구
+    assert clip.history[0].endswith("비평가의 차례입니다.")  # 그 뒤에 프롬프트
     assert any("탭 2 · 비평가" in o for o in out)           # 비평가 = 2번 탭
     assert be.turns[0].tab == 2 and be.turns[0].reply_chars == len("답변입니다 ✓")
 
@@ -121,7 +122,7 @@ def test_recopy_command():
     # 붙여 넣기 전에 이미지를 복사해 프롬프트를 잃음(비텍스트 → 답변으로 안 받음) → r 로 다시 복사
     be, clip, user, out = _backend([("copy", ""), ("cmd", "r"), ("wait",), ("copy", "답")])
     assert be.send(P, "보낼 프롬프트") == "답"
-    assert clip.history.count("보낼 프롬프트") == 2  # 처음 + r 명령
+    assert sum(h.endswith("보낼 프롬프트") for h in clip.history) == 2  # 처음 + r 명령
 
 
 def test_quit_command_raises_user_abort():
@@ -273,12 +274,12 @@ def test_turn_interval_enforced_and_clipboard_untouched_while_waiting():
     orig_set = clip.set_text
 
     def spy(text):
-        if text.startswith("프롬프트"):  # 프로그램이 넣는 것만 기록 (가짜 사용자의 복사는 제외)
+        if "프롬프트" in text:  # 프로그램이 넣는 것만 기록 (가짜 사용자의 복사는 제외)
             issued_at.append((user.t, text))
         orig_set(text)
     clip.set_text = spy
     assert be.send(C, "프롬프트 2") == "답 2"
-    assert issued_at[0][1] == "프롬프트 2" and issued_at[0][0] >= 300.0      # 5분 전에는 클립보드에 안 넣음
+    assert issued_at[0][1].endswith("프롬프트 2") and issued_at[0][0] >= 300.0  # 5분 전에는 클립보드에 안 넣음
     assert any("다음 차례 [탭 2 · 비평가] 까지 4분 30초 대기" in o for o in out)
     assert sum("남음" in o for o in out) == 4                                  # 1분마다 남은 시간 (4:00, 3:00, 2:00, 1:00 시점)
 

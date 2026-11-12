@@ -17,6 +17,8 @@ def render_markdown(
     finished: datetime,
     note: str = "",
     appendix: str = "",
+    resumes: int = 0,
+    resume_hint: str = "",
 ) -> str:
     """회의록 마크다운 문자열 생성. 권장 길이를 넘은 발언은 표시만 하고 내용은 자르지 않는다."""
     rounds = max((u.round for u in utterances), default=0)
@@ -30,6 +32,8 @@ def render_markdown(
         f"- 진행 라운드: {rounds} / 최대 {cfg.max_rounds}, 발언 수: {len(utterances)}",
         f"- 권장 길이({cfg.char_limit}자) 초과 발언: {len(over)}개",
     ]
+    if resumes:
+        lines.append(f"- 중단 후 이어 하기: {resumes}회")
     if cfg.agenda:
         lines.append("- 점검 항목: " + " / ".join(item.split(":")[0] for item in cfg.agenda))
     if note:
@@ -43,6 +47,8 @@ def render_markdown(
         lines += ["", f"### {u.speaker_name} ({u.chars}자){flag}", "", u.text.strip()]
     if appendix:
         lines += ["", "## 사용량", "", appendix]
+    if resume_hint:
+        lines += ["", "## 이어서 하려면", "", resume_hint]
     return "\n".join(lines) + "\n"
 
 

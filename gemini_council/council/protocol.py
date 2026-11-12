@@ -80,18 +80,24 @@ def build_turn_prompt(
     topic: str,
     cfg: CouncilConfig,
     stateful: bool,
+    recap: bool = False,
 ) -> str:
     """이번 턴에 role 에게 보낼 메시지를 만든다.
 
     Args:
         round_no: 현재 라운드 (1..cfg.max_rounds).
         stateful: 백엔드가 대화 기록을 스스로 유지하는지 여부.
+        recap: 중단 후 이어 하기의 첫 메시지. 탭이 이전 대화를 잃었다고 가정하고
+            규칙 + 사회자 최신 요약 + 그 뒤 발언 + 이 역할의 직전 발언을 한 번에 보낸다.
     Returns:
         백엔드 입력창에 그대로 넣을 문자열.
     """
     # 전체 라운드 수(예산)는 알려주지 않는다 → 마지막 라운드에 맞춘 억지 수렴 방지 (roles.build_seed_prompt 참고)
     header = f"[현재] 라운드 {round_no}, {role.name}의 차례입니다."
     footer = "위 내용을 바탕으로 당신의 역할과 규칙에 맞게 발언하세요."
+
+    if recap:
+        return _build_recap(role, roles, state, topic, cfg, header, footer)
 
     if stateful:
         parts: list[str] = []
@@ -118,6 +124,23 @@ def build_turn_prompt(
         _format_utterances(recent),
         footer,
     ])
+
+
+RECAP_NOTE = "[이어서 진행] 이 토론은 중단됐다가 다시 시작되었습니다. 아래가 지금까지의 진행 상황입니다."
+
+
+def _build_recap(role: Role, roles: tuple[Role, ...], state: DiscussionState, topic: str,
+                 cfg: CouncilConfig, header: str, footer: str) -> str:
+    mod_key = _moderator_key(roles)
+    idx = state.latest_summary_index(mod_key)
+    summary = "(아직 없음)" if idx is None else _format_utterances([state.utterances[idx]])
+    recent = state.utterances if idx is None else state.utterances[idx + 1:]
+    parts = [build_seed_prompt(role, roles, topic, cfg), RECAP_NOTE, "[사회자의 최신 요약]", summary]
+    own = [u for u in state.utterances if u.speaker_key == role.key]
+    if own and own[-1] not in recent and (idx is None or own[-1] is not state.utterances[idx]):
+        parts += [f"[{role.name}(당신)의 직전 발언]", _format_utterances([own[-1]])]
+    parts += ["[요약 이후 발언]", _format_utterances(list(recent)), header, footer]
+    return "\n\n".join(parts)
 
 
 # 마크다운 강조(**, __, `)로 감싼 토큰도 인정한다. 예: **[DISCUSSION_COMPLETE]**
