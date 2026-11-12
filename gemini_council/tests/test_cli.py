@@ -61,12 +61,14 @@ def test_cli_requires_topic():
 
 def test_ask_interactive_defaults_and_validation(capsys):
     from council.cli import INTERACTIVE_DEFAULT_ROUNDS, ask_interactive
-    answers = iter(["", "  로봇 팔 제어  ", "abc", "0", ""])
+    answers = iter(["", "  로봇 팔 제어  ", "", "abc", "0", ""])
     argv = ask_interactive(read=lambda prompt: next(answers))
-    assert argv == ["--backend", "manual", "--topic", "로봇 팔 제어", "--rounds", str(INTERACTIVE_DEFAULT_ROUNDS)]
+    assert argv == ["--backend", "manual", "--topic", "로봇 팔 제어", "--rounds", str(INTERACTIVE_DEFAULT_ROUNDS),
+                    "--agenda", "general"]
     assert capsys.readouterr().out.count("1 이상의 숫자") == 2
-    answers = iter(["주제", "5"])
-    assert ask_interactive(read=lambda prompt: next(answers))[-1] == "5"
+    answers = iter(["주제", "9", "2", "5"])  # 잘못된 유형 9 → 다시 물음 → 2(주제 검토)
+    argv = ask_interactive(read=lambda prompt: next(answers))
+    assert argv[-4:] == ["--rounds", "5", "--agenda", "topic-review"]
 
 
 def test_default_backend_is_manual():

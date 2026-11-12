@@ -81,12 +81,8 @@ def test_prompt_length_bounded(stateful):
     """
     lens = _simulate_prompt_lengths(stateful)
     per_round = [lens[i:i + 4] for i in range(0, len(lens), 4)]
-    for mid in per_round[2:-1]:
-        assert mid == per_round[1]  # 라운드 2 이후 매 라운드 입력 길이가 정확히 일정
-    # 마지막 라운드는 사회자에게 '최종 결론' 안내 문구만 추가됨
-    final_note = len(" 마지막 라운드이므로 최종 결론을 정리하세요.")
-    assert per_round[-1][:-1] == per_round[1][:-1]
-    assert per_round[-1][-1] == per_round[1][-1] + final_note
+    for later in per_round[2:]:
+        assert later == per_round[1]  # 라운드 2 이후 (마지막 라운드 포함) 매 라운드 입력 길이가 정확히 일정
     assert max(lens) < 4 * 700 + 1500
 
 
@@ -108,10 +104,35 @@ def test_stateless_before_any_summary_sends_all():
     assert "(아직 없음)" in p and "proposer-r1" in p
 
 
-def test_last_round_moderator_gets_final_instruction():
+def test_round_budget_is_hidden():
+    """전체 라운드 수를 알려주지 않는다 (마지막 라운드에 맞춘 억지 수렴 방지)."""
     s = DiscussionState()
-    p = build_turn_prompt(M, DEFAULT_ROLES, s, CFG.max_rounds, TOPIC, CFG, stateful=True)
-    assert "최종 결론" in p
+    for role in DEFAULT_ROLES:
+        for rnd in (1, CFG.max_rounds):
+            p = build_turn_prompt(role, DEFAULT_ROLES, s, rnd, TOPIC, CFG, stateful=True)
+            assert f"/{CFG.max_rounds}" not in p and "마지막 라운드" not in p
+            assert f"라운드 {rnd}, {role.name}의 차례입니다." in p
+
+
+def test_seed_rules():
+    from council.roles import AGENDAS
+    cfg = CouncilConfig(agenda=AGENDAS["topic-review"])
+    seeds = {r.key: build_seed_prompt(r, DEFAULT_ROLES, TOPIC, cfg) for r in DEFAULT_ROLES}
+    for k, sd in seeds.items():
+        assert "출처 없는 수치를 지어내지 않는다" in sd             # 2. 수치 규칙 완화
+        assert "새로운 점" in sd and "대안 비교" in sd              # 4. 점검 항목 공유
+        assert f"{cfg.char_limit}자" in sd and cfg.char_limit == 1000  # 5. 길이 상한
+    assert "치명적 약점:" in seeds["critic"] and "의향이 있습니까" in seeds["critic"]  # 3. 비평가 강화
+    assert "치명적 약점:" not in seeds["proposer"]
+    assert "라운드 수 제한이 없다고 가정" in seeds["moderator"]       # 1. 예산 무관 판단
+    assert "해결/부분/미해결" in seeds["moderator"]
+    # 규칙 번호가 1부터 빠짐없이 이어지는지
+    import re
+    nums = [int(m) for m in re.findall(r"^(\d+)\. ", seeds["critic"], re.M)]
+    assert nums == list(range(1, len(nums) + 1))
+    # 자유 토론이면 점검 항목 없음
+    plain = build_seed_prompt(M, DEFAULT_ROLES, TOPIC, CouncilConfig())
+    assert "점검 항목" not in plain and "해결/부분/미해결" not in plain
 
 
 # ---------- 종료 토큰 ----------

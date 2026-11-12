@@ -16,7 +16,7 @@ from .clipboard import system_clipboard
 from .console import ConsoleCommands
 from .config import CouncilConfig
 from .orchestrator import Orchestrator
-from .roles import Role
+from .roles import AGENDAS, Role
 
 _GC = GeminiCliConfig()
 
@@ -30,6 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backend", choices=["manual", "gemini-cli", "mock"], default="manual",
                    help="manual=반자동(웹 탭에 직접 복사·붙여넣기, 기본), gemini-cli=무인, mock=오프라인 시험")
     p.add_argument("--clipboard-test", action="store_true", help="클립보드 읽기/쓰기만 점검하고 종료")
+    p.add_argument("--agenda", choices=sorted(AGENDAS), default="general",
+                   help="general=자유 토론, topic-review=연구 주제 검토(새로운 점·실현 가능성·위험·대안 점검)")
 
     g = p.add_argument_group("gemini-cli 백엔드")
     g.add_argument("--gemini-cmd", default="gemini",
@@ -112,6 +114,9 @@ def ask_interactive(read: Callable[[str], str] = input) -> list[str]:
     topic = ""
     while not topic:
         topic = read("토론 주제를 입력하세요: ").strip()
+    kind = ""
+    while kind not in ("1", "2"):
+        kind = read("토론 유형 — 1: 자유 토론, 2: 연구 주제 검토 [Enter = 1]: ").strip() or "1"
     rounds = INTERACTIVE_DEFAULT_ROUNDS
     while True:
         raw = read(f"최대 라운드 수 [Enter = {INTERACTIVE_DEFAULT_ROUNDS}]: ").strip()
@@ -121,7 +126,8 @@ def ask_interactive(read: Callable[[str], str] = input) -> list[str]:
             rounds = int(raw)
             break
         print("  1 이상의 숫자를 입력하세요.")
-    return ["--backend", "manual", "--topic", topic, "--rounds", str(rounds)]
+    agenda = "topic-review" if kind == "2" else "general"
+    return ["--backend", "manual", "--topic", topic, "--rounds", str(rounds), "--agenda", agenda]
 
 
 def clipboard_selftest() -> int:
@@ -142,7 +148,8 @@ def run(argv: list[str], console: ConsoleCommands | None) -> int:
     args = parser.parse_args(argv)
     if args.clipboard_test:
         return clipboard_selftest()
-    cfg = CouncilConfig(max_rounds=args.rounds, char_limit=args.char_limit, log_dir=args.log_dir)
+    cfg = CouncilConfig(max_rounds=args.rounds, char_limit=args.char_limit, log_dir=args.log_dir,
+                        agenda=AGENDAS[args.agenda])
     if args.backend == "manual" and console is None:
         console = ConsoleCommands()
     backend = make_backend(args, cfg, console)

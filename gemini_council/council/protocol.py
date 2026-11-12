@@ -89,9 +89,8 @@ def build_turn_prompt(
     Returns:
         백엔드 입력창에 그대로 넣을 문자열.
     """
-    header = f"[현재] 라운드 {round_no}/{cfg.max_rounds}, {role.name}의 차례입니다."
-    if role.is_moderator and round_no == cfg.max_rounds:
-        header += " 마지막 라운드이므로 최종 결론을 정리하세요."
+    # 전체 라운드 수(예산)는 알려주지 않는다 → 마지막 라운드에 맞춘 억지 수렴 방지 (roles.build_seed_prompt 참고)
+    header = f"[현재] 라운드 {round_no}, {role.name}의 차례입니다."
     footer = "위 내용을 바탕으로 당신의 역할과 규칙에 맞게 발언하세요."
 
     if stateful:

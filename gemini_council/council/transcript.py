@@ -30,6 +30,8 @@ def render_markdown(
         f"- 진행 라운드: {rounds} / 최대 {cfg.max_rounds}, 발언 수: {len(utterances)}",
         f"- 권장 길이({cfg.char_limit}자) 초과 발언: {len(over)}개",
     ]
+    if cfg.agenda:
+        lines.append("- 점검 항목: " + " / ".join(item.split(":")[0] for item in cfg.agenda))
     if note:
         lines.append(f"- 비고: {note}")
     current = 0
