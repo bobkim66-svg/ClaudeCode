@@ -62,7 +62,7 @@ try {
     if (Get-Command gemini.cmd -ErrorAction SilentlyContinue) {
         Write-Host "==> exe --backend gemini-cli --check" -ForegroundColor Cyan
         & $cleanExe --backend gemini-cli --check
-        Write-Host "  (exit $LASTEXITCODE: 0=로그인·모델 정상, 1=로그인 필요 또는 실패 원인 위 메시지 참고)"
+        Write-Host "  (exit ${LASTEXITCODE}: 0=로그인·모델 정상, 1=로그인 필요 또는 실패 원인 위 메시지 참고)"
     } else {
         Write-Host "Gemini CLI 미설치: 실제 연결 점검 생략" -ForegroundColor Yellow
     }
