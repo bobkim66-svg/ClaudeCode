@@ -124,8 +124,9 @@ def classify_failure(returncode: int, stdout: str, stderr: str) -> BackendError:
         return UsageLimitReached(f"Gemini 사용량 한도: {msg[:500]}")
     if returncode == EXIT_AUTH or err.get("code") == EXIT_AUTH:
         return BackendError(
-            "Gemini CLI 로그인이 필요함. 터미널에서 `gemini` 를 한 번 대화형으로 실행해 "
-            f"'Login with Google' 로 로그인한 뒤 다시 실행하라. (원문: {msg[:300]})")
+            "Gemini CLI 로그인이 필요함. 터미널에서 `gemini` (Windows PowerShell 은 `gemini.cmd`) 를 "
+            "한 번 실행해 'Sign in with Google' 로 로그인한 뒤 /quit 로 나와 다시 실행하라. "
+            f"(원문: {msg[:300]})")
     return BackendError(f"Gemini CLI 실패 (종료 코드 {returncode}, {etype or '형식 불명'}): {msg[:500]}")
 
 
