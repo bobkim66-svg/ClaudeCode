@@ -1,0 +1,10 @@
+[project]
+name = "gemini_council"
+version = "0.1.0"
+description = "여러 AI 를 역할별로 토론시키는 오케스트레이터"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
