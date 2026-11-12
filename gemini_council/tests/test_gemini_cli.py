@@ -198,10 +198,11 @@ def test_full_discussion_with_fake_cli(fake_env, monkeypatch, tmp_path):
     res = Orchestrator(_backend(), "로봇 팔 역기구학 해법 비교", cfg).run()
     assert res.reason is StopReason.COMPLETED and res.rounds_done == 2
     calls = _calls(fake_env)
-    assert len(calls) == 8
-    assert all("[토론 규칙]" in c["stdin"] for c in calls)  # stateless → 매번 seed
+    assert len(calls) == 9                                   # 발언 8 + 초록 1
+    assert all("[토론 규칙]" in c["stdin"] for c in calls[:8])  # stateless → 매번 seed
+    assert "초록 작성" in calls[8]["stdin"] and "[토론 전체 발언]" in calls[8]["stdin"]
     md = res.log_path.read_text(encoding="utf-8")
-    assert "## 사용량" in md and "합계 (8회)" in md
+    assert "## 사용량" in md and "합계 (9회)" in md and "## 초록" in md
 
 
 def test_quota_mid_discussion_saves(fake_env, monkeypatch, tmp_path):

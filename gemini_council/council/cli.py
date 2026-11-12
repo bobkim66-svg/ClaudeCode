@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--clipboard-test", action="store_true", help="클립보드 읽기/쓰기만 점검하고 종료")
     p.add_argument("--interval", type=float, default=INTERACTIVE_DEFAULT_INTERVAL_MIN,
                    help="반자동: 차례 사이 최소 간격 [분] (Gemini 에 메시지가 몰려 나가지 않게, 0 = 대기 없음)")
+    p.add_argument("--no-abstract", action="store_true", help="토론 종료 후 초록(전체 요약) 요청 생략")
     p.add_argument("--agenda", choices=sorted(AGENDAS), default="general",
                    help="general=자유 토론, topic-review=연구 주제 검토(새로운 점·실현 가능성·위험·대안 점검)")
 
@@ -209,7 +210,8 @@ def run(argv: list[str], console: ConsoleCommands | None) -> int:
         parser.error("--topic 이 필요함")
 
     try:
-        orch = Orchestrator(backend, args.topic, cfg, on_event=_log, resume=resume, resume_json=resume_json)
+        orch = Orchestrator(backend, args.topic, cfg, on_event=_log, resume=resume, resume_json=resume_json,
+                            make_abstract=not args.no_abstract)
     except SessionError as e:
         print(f"이어 하기 실패: {e}")
         return 1

@@ -151,6 +151,10 @@ class TabSimulator:
     def sleep(self, dt):
         self.t += dt
         prompt = self.clip.text
+        if "[토론 종료 — 초록 작성]" in prompt:   # 토론 종료 후 사회자 탭의 초록 요청
+            self.abstract_prompts = getattr(self, "abstract_prompts", []) + [prompt]
+            self.clip.set_text("**배경·주제:** 모의\n**합의된 결론:** 모의 결론")
+            return
         role = next(r for r in DEFAULT_ROLES if f"{r.name}의 차례입니다." in prompt)
         self.tab_inputs[role.key].append(prompt)
         n = len(self.tab_inputs[role.key])
@@ -168,6 +172,9 @@ def test_full_discussion_with_simulated_user(tmp_path):
     cfg = CouncilConfig(max_rounds=3, log_dir=tmp_path / "logs")
     res = Orchestrator(be, "주제", cfg).run()
     assert res.reason is StopReason.COMPLETED and res.rounds_done == 2 and len(res.utterances) == 8
+    # 종료 후 사회자 탭에 초록 요청 1회 (사회자는 전체를 이미 봤으므로 지시만, 규칙·발언 재전송 없음)
+    assert len(sim.abstract_prompts) == 1 and "[토론 규칙]" not in sim.abstract_prompts[0]
+    assert "[당신이 아직 못 본 발언]" not in sim.abstract_prompts[0]
     # stateful: 각 탭에 규칙은 첫 번째 붙여넣기에만, 두 번째부터는 새 발언만
     for key, inputs in sim.tab_inputs.items():
         assert "[토론 규칙]" in inputs[0] and "[토론 규칙]" not in inputs[1]
@@ -175,7 +182,8 @@ def test_full_discussion_with_simulated_user(tmp_path):
     p2 = sim.tab_inputs["proposer"][1]
     assert all(f"{n} 1라운드" in p2 for n in ("비평가", "대안 설계자", "사회자"))
     md = res.log_path.read_text(encoding="utf-8")
-    assert "## 사용량" in md and "합계 (8회)" in md
+    assert "## 사용량" in md and "합계 (9회)" in md            # 발언 8 + 초록 1
+    assert md.index("## 초록") < md.index("## 라운드 1")        # 초록은 맨 위
 
 
 def test_quit_mid_discussion_saves_transcript(tmp_path):
@@ -318,19 +326,20 @@ def test_full_discussion_interval_total_time(tmp_path):
     orig = clip.set_text
 
     def set_text(text):
-        if "의 차례입니다." in text:
+        if "의 차례입니다." in text or "초록 작성" in text:
             issue_times.append(sim.t)
         orig(text)
     clip.set_text = set_text
 
     def sleep(dt):
         sim.t += dt
-        if clip.text and "의 차례입니다." in clip.text and sim.t >= issue_times[-1] + 20:  # 20 s 뒤 답변
+        if clip.text and ("의 차례입니다." in clip.text or "초록 작성" in clip.text) \
+                and sim.t >= issue_times[-1] + 20:  # 20 s 뒤 답변
             sim.sleep(0)
 
     be = ManualRelayBackend(clipboard=clip, out=lambda s: None, sleep=sleep, clock=lambda: sim.t,
                             cfg=ManualConfig(poll_s=1.0, turn_interval_s=300.0))
     res = Orchestrator(be, "주제", CouncilConfig(max_rounds=3, log_dir=tmp_path / "logs")).run()
-    assert len(res.utterances) == 12 and len(issue_times) == 12
+    assert len(res.utterances) == 12 and len(issue_times) == 13     # 12차례 + 초록 요청
     gaps = [b - a for a, b in zip(issue_times, issue_times[1:])]
-    assert min(gaps) >= 300.0 - 1e-9 and issue_times[-1] >= 11 * 300.0
+    assert min(gaps) >= 300.0 - 1e-9 and issue_times[-1] >= 12 * 300.0  # 초록 요청도 간격을 지킴

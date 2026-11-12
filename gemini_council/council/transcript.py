@@ -19,6 +19,8 @@ def render_markdown(
     appendix: str = "",
     resumes: int = 0,
     resume_hint: str = "",
+    abstract: str = "",
+    abstract_note: str = "",
 ) -> str:
     """회의록 마크다운 문자열 생성. 권장 길이를 넘은 발언은 표시만 하고 내용은 자르지 않는다."""
     rounds = max((u.round for u in utterances), default=0)
@@ -38,6 +40,11 @@ def render_markdown(
         lines.append("- 점검 항목: " + " / ".join(item.split(":")[0] for item in cfg.agenda))
     if note:
         lines.append(f"- 비고: {note}")
+    if abstract:
+        lines += ["", "## 초록", "", abstract.strip(), "",
+                  "_사회자 탭이 토론 종료 후 작성. 토론 내용만 요약하도록 지시했지만 결론의 근거는 본문에서 확인할 것._"]
+    elif abstract_note:
+        lines += ["", "## 초록", "", f"_{abstract_note}_"]
     current = 0
     for u in utterances:
         if u.round != current:

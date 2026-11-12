@@ -126,6 +126,36 @@ def build_turn_prompt(
     ])
 
 
+ABSTRACT_MARKER = "[토론 종료 — 초록 작성]"
+ABSTRACT_CHAR_LIMIT = 600  # 초록 권장 길이 [자]
+
+
+def build_abstract_prompt(roles: tuple[Role, ...], state: DiscussionState, topic: str,
+                          cfg: CouncilConfig, stateful: bool) -> str:
+    """토론이 끝난 뒤 사회자에게 전체를 초록처럼 요약하게 하는 메시지.
+
+    stateful(웹 탭): 사회자는 매 라운드 마지막 발언자라 토론 전체를 이미 봤다 → 지시만 (못 본 발언이 있으면 덧붙임).
+    stateless(CLI): 기억이 없으므로 전체 발언을 함께 보낸다.
+    """
+    mod_key = _moderator_key(roles)
+    lines = [
+        ABSTRACT_MARKER,
+        f"토론이 끝났습니다. 주제 \"{topic}\" 에 대한 토론 전체를 논문 초록처럼 요약하세요.",
+        "형식 (각 항목 1~3문장):",
+        "**배경·주제:** / **핵심 쟁점:** / **합의된 결론:** / **미해결·검증 필요:** / **다음 단계:**",
+        "규칙: 토론에 나온 내용만 요약하고 새 주장을 추가하지 않는다. 출처 없이 나온 수치·주장은 "
+        "'미해결·검증 필요'에 적는다. 참가자들이 합의했어도 근거가 약한 결론은 그렇다고 쓴다.",
+    ]
+    if cfg.agenda:
+        lines.append("점검 항목별 최종 상태(해결/부분/미해결)를 '미해결·검증 필요'에 포함한다.")
+    lines.append(f"공백 포함 {ABSTRACT_CHAR_LIMIT}자 이내. 종료 표시 문자열은 쓰지 않는다.")
+    body = "\n".join(lines)
+    if stateful:
+        unseen = state.delta_for(mod_key)
+        return body if not unseen else body + "\n\n[당신이 아직 못 본 발언]\n\n" + _format_utterances(unseen)
+    return body + "\n\n[토론 전체 발언]\n\n" + _format_utterances(state.utterances)
+
+
 RECAP_NOTE = "[이어서 진행] 이 토론은 중단됐다가 다시 시작되었습니다. 아래가 지금까지의 진행 상황입니다."
 
 

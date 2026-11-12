@@ -58,6 +58,9 @@ class MockBackend(ChatBackend):
                 raise BackendError("모의 백엔드 오류")
             raise RuntimeError("모의 예기치 못한 오류")  # 'crash': 백엔드 예외가 아닌 버그 흉내
 
+        if "[토론 종료 — 초록 작성]" in prompt:
+            return "**배경·주제:** 모의 주제\n**핵심 쟁점:** 모의 쟁점\n**합의된 결론:** 모의 결론\n" \
+                   "**미해결·검증 필요:** 없음\n**다음 단계:** 모의 단계"
         n = self._calls.get(role.key, 0) + 1  # 이 역할의 n번째 발언 = 라운드 번호
         self._calls[role.key] = n
         if role.is_moderator:

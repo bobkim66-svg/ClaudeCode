@@ -125,7 +125,11 @@ def test_reproducible_with_same_seed(tmp_path):
 def test_stateless_mode_runs(tmp_path):
     res, be = _run(tmp_path, rounds=3, stateful=False)
     assert res.reason is StopReason.MAX_ROUNDS
-    assert all("[토론 규칙]" in p for _, p in be.prompts)  # stateless 는 매 턴 seed 포함
+    turns = [p for _, p in be.prompts if "초록 작성" not in p]
+    assert len(turns) == 3 * N_ROLES and all("[토론 규칙]" in p for p in turns)  # stateless 는 매 턴 seed 포함
+    abstract = [p for _, p in be.prompts if "초록 작성" in p]
+    assert len(abstract) == 1 and "[토론 전체 발언]" in abstract[0]      # stateless 초록 요청엔 전체 발언 동봉
+    assert all(u.text.strip() in abstract[0] for u in res.utterances)
 
 
 def test_stateful_mode_sends_seed_once_per_role(tmp_path):

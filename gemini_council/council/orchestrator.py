@@ -15,7 +15,7 @@ from typing import Callable
 
 from .backends.base import BackendError, ChatBackend, ResponseTimeout, UsageLimitReached, UserAbort
 from .config import CouncilConfig
-from .protocol import DiscussionState, Utterance, build_turn_prompt, is_termination
+from .protocol import DiscussionState, Utterance, build_abstract_prompt, build_turn_prompt, is_termination
 from .roles import DEFAULT_ROLES, Role, validate_roles
 from .session import (STATE_VERSION, STATUS_RUNNING, SessionError, save_state, state_path_for,
                       utterances_from_state, utterances_to_state, write_atomic)
@@ -58,6 +58,7 @@ class Orchestrator:
         clock: 현재 시각 함수 (테스트에서 고정하기 위함).
         resume: session.load_state 로 읽은 진행 상태. 주어지면 그 토론을 이어서 진행하고 같은 파일에 기록한다.
         resume_json: resume 상태 파일 경로 (회의록·상태 파일이 있는 폴더를 정함).
+        make_abstract: 정상 종료·최대 라운드 도달 시 사회자에게 토론 전체 초록을 한 번 더 요청해 회의록 맨 위에 넣는다.
 
     발언 하나가 끝날 때마다 회의록(.md)과 진행 상태(.json)를 자동 저장한다.
     창을 닫거나 PC 가 꺼져도 마지막으로 끝난 발언까지는 남고, --resume 으로 이어 할 수 있다.
@@ -75,6 +76,7 @@ class Orchestrator:
         clock: Callable[[], datetime] = datetime.now,
         resume: dict | None = None,
         resume_json: Path | None = None,
+        make_abstract: bool = True,
     ) -> None:
         if not topic.strip():
             raise ValueError("토론 주제가 비어 있음")
@@ -91,6 +93,9 @@ class Orchestrator:
         self.clock = clock
         self.state = DiscussionState()
         self._resume = resume
+        self.make_abstract = make_abstract
+        self.abstract = ""
+        self.abstract_note = ""
         self._needs_recap: set[str] = set()
         self._resumes: list[str] = []
         self._started: datetime | None = None
@@ -149,7 +154,8 @@ class Orchestrator:
         resumable = status not in ("COMPLETED", "MAX_ROUNDS")
         md = render_markdown(self.topic, self.state.utterances, self.cfg, reason_text, self._started, finished,
                              detail, appendix=self.backend.usage_report(), resumes=len(self._resumes),
-                             resume_hint=self._resume_hint() if resumable else "")
+                             resume_hint=self._resume_hint() if resumable else "",
+                             abstract=self.abstract, abstract_note=self.abstract_note)
         write_atomic(self._md_path, md)
         save_state(state_path_for(self._md_path), {
             "version": STATE_VERSION, "status": status, "stop_reason": reason_text, "detail": detail,
@@ -158,8 +164,25 @@ class Orchestrator:
             "started": self._started.isoformat(), "updated": finished.isoformat(),
             "resumes": self._resumes, "md_name": self._md_path.name,
             "utterances": utterances_to_state(self.state.utterances),
+            "abstract": self.abstract,
         })
         return self._md_path
+
+    def _write_abstract(self) -> None:
+        """사회자에게 토론 전체 초록을 요청. 실패해도(q, 백엔드 오류) 토론 결과와 회의록은 그대로 둔다."""
+        moderator = next(r for r in self.roles if r.is_moderator)
+        prompt = build_abstract_prompt(self.roles, self.state, self.topic, self.cfg, self.backend.stateful)
+        self.on_event(f"[초록] {moderator.name}에게 토론 전체 초록 요청 (입력 {len(prompt)}자)")
+        self._autosave()  # 토론 본문은 초록 요청 전에 이미 저장
+        try:
+            self.abstract = self.backend.send(moderator, prompt).strip()
+            self.on_event(f"[초록] 받음 ({len(self.abstract)}자)")
+        except UserAbort:
+            self.abstract_note = "초록 단계에서 사용자가 중단해 초록 없음 (토론 본문은 완결)"
+            self.on_event("[초록] 건너뜀")
+        except BackendError as e:
+            self.abstract_note = f"초록 생성 실패: {e}"
+            self.on_event(f"[초록] 실패: {e}")
 
     def _wait_if_paused(self) -> None:
         if not self.resume_event.is_set():
@@ -211,6 +234,8 @@ class Orchestrator:
         try:
             self.backend.open(self.roles)
             reason = self._loop()
+            if reason in (StopReason.COMPLETED, StopReason.MAX_ROUNDS) and self.make_abstract:
+                self._write_abstract()
         except UsageLimitReached as e:
             reason, detail = StopReason.USAGE_LIMIT, str(e)
         except UserAbort as e:
