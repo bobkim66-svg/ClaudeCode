@@ -57,3 +57,18 @@ def test_cli_quota_returns_nonzero(monkeypatch, tmp_path):
 def test_cli_requires_topic():
     with pytest.raises(SystemExit):
         main(["--backend", "mock"])
+
+
+def test_ask_interactive_defaults_and_validation(capsys):
+    from council.cli import INTERACTIVE_DEFAULT_ROUNDS, ask_interactive
+    answers = iter(["", "  로봇 팔 제어  ", "abc", "0", ""])
+    argv = ask_interactive(read=lambda prompt: next(answers))
+    assert argv == ["--backend", "manual", "--topic", "로봇 팔 제어", "--rounds", str(INTERACTIVE_DEFAULT_ROUNDS)]
+    assert capsys.readouterr().out.count("1 이상의 숫자") == 2
+    answers = iter(["주제", "5"])
+    assert ask_interactive(read=lambda prompt: next(answers))[-1] == "5"
+
+
+def test_default_backend_is_manual():
+    from council.cli import build_parser
+    assert build_parser().parse_args(["--topic", "t"]).backend == "manual"

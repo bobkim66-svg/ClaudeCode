@@ -17,6 +17,10 @@ class UsageLimitReached(BackendError):
     """사용량 한도 도달 (웹 배너, API 429 등). 오케스트레이터는 저장 후 안전 종료한다."""
 
 
+class UserAbort(BackendError):
+    """사용자가 중단을 요청함 (반자동 모드의 'q'). 오케스트레이터는 '사용자 중단'으로 저장 후 종료한다."""
+
+
 class ResponseTimeout(BackendError):
     """응답 완료를 제한 시간 안에 감지하지 못함."""
 

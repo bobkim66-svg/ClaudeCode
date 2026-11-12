@@ -1,16 +1,40 @@
 # gemini_council — 멀티 AI 구조화 토론 오케스트레이터
 
 역할이 다른 AI 4명(제안자 → 비평가 → 대안 설계자 → 사회자)이 라운드 단위로 토론하고,
-사회자가 마지막 줄에 `[DISCUSSION_COMPLETE]` 를 내거나 최대 라운드·사용량 한도·오류가 나면
+사회자가 마지막 줄에 `[DISCUSSION_COMPLETE]` 를 내거나 최대 라운드에 도달하면
 `logs/discussion_YYYYMMDD_HHMMSS.md` 회의록(사용량 표 포함)을 남기고 종료한다.
 
-- 1단계: 순수 로직 + mock 백엔드 + CLI
-- 2단계: **Gemini CLI 백엔드** (Google 공식 도구를 헤드리스로 호출, 브라우저 자동화 없음)
-- Windows 11 단일 exe 빌드 (Windows / Ubuntu 22.04 CI 에서 테스트)
+| 모드 | 무엇을 쓰나 | 사람 | 비고 |
+|---|---|---|---|
+| **manual (기본, 반자동)** | 내 계정의 Gemini 웹 탭 4개 (학교 Gemini Pro 그대로) | 매 차례 복사·붙여넣기 | 웹 화면 자동 조작 없음 |
+| gemini-cli (무인) | Google 공식 Gemini CLI | 불필요 | 개인 계정 필요 (학교 Workspace 계정 불가) |
+| mock | 가짜 응답 | 불필요 | 오프라인 시험용 |
 
-Python 코드는 표준 라이브러리만 사용한다. Gemini CLI 는 Node.js 20 이상이 필요하다.
+## 반자동 모드 사용법 (Windows 11)
 
-## 준비 (최초 1회, Windows 11 PowerShell)
+1. `gemini_council.exe` 를 받는다: GitHub **Actions → gemini-council → 최근 성공 실행 → Artifacts → gemini-council-windows-exe**
+   (처음 실행 시 "Windows의 PC 보호" 가 뜨면 **추가 정보 → 실행**. 서명하지 않은 exe 라서 뜨는 경고)
+2. Chrome 에서 학교 계정으로 Gemini **새 채팅 탭 4개**를 열고 순서대로 제안자 / 비평가 / 대안 설계자 / 사회자로 정한다.
+   비평가 탭은 Pro(사고 모드) 권장.
+3. `gemini_council.exe` 를 **더블클릭** → 토론 주제와 최대 라운드(기본 3) 입력.
+4. 매 차례 화면 안내대로:
+   - `▶ [탭 2 · 비평가] 에 붙여 넣으세요` → 그 탭에서 **Ctrl+V, Enter**
+   - 답변이 끝나면 답변 아래 **복사 아이콘** 클릭 → 프로그램이 감지해 다음 차례로 넘어감 (프로그램 창 조작 불필요)
+5. 명령: `r` + Enter = 보낼 메시지 다시 복사, `q` + Enter = 지금까지 저장하고 종료.
+   회의록은 exe 가 있는 폴더의 `logs\` 에 저장된다.
+
+주의: 기다리는 동안 다른 글을 복사하면 그 글이 답변으로 처리된다. 보낸 메시지나 직전 답변을 다시 복사한 경우는
+감지해서 경고만 하고 계속 기다린다.
+
+명령줄로 실행할 때 (PowerShell):
+
+```powershell
+.\gemini_council.exe --topic "AUV 군집의 통신 두절 시 재집결 전략" --rounds 3
+```
+
+## 무인 모드 (gemini-cli): 개인 Google 계정이 있을 때
+
+### 준비 (최초 1회, Windows 11 PowerShell)
 
 1. Node.js LTS 설치 (Gemini CLI 는 Node 20 이상 필요). 설치 후 **PowerShell 을 새로 연다.**
 
@@ -41,7 +65,7 @@ gemini.cmd
 .\gemini_council.exe --backend gemini-cli --check
 ```
 
-## 토론 실행 (Windows)
+### 무인 토론 실행 (Windows)
 
 ```powershell
 .\gemini_council.exe --backend gemini-cli --topic "AUV 군집의 통신 두절 시 재집결 전략" --rounds 3
@@ -84,7 +108,7 @@ apt 의 nodejs 는 v12 라 쓸 수 없다. nvm 으로 Node 22 를 설치한 뒤 
 cd gemini_council
 python3 -m pip install -r requirements-dev.txt
 python3 -m pytest -q
-python3 run_council.py --topic "AUV 군집의 통신 두절 시 재집결 전략" --rounds 5 --mock-end-round 3
+python3 run_council.py --backend mock --topic "AUV 군집의 통신 두절 시 재집결 전략" --rounds 5 --mock-end-round 3
 ```
 
 ## mock 으로 실행 / 테스트 (Windows 11, PowerShell)
@@ -93,7 +117,7 @@ python3 run_council.py --topic "AUV 군집의 통신 두절 시 재집결 전략
 cd gemini_council
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
-python run_council.py --topic "AUV 군집의 통신 두절 시 재집결 전략" --rounds 5 --mock-end-round 3
+python run_council.py --backend mock --topic "AUV 군집의 통신 두절 시 재집결 전략" --rounds 5 --mock-end-round 3
 ```
 
 ## 구조
@@ -104,6 +128,9 @@ python run_council.py --topic "AUV 군집의 통신 두절 시 재집결 전략"
 | `council/roles.py` | 역할 정의, seed 프롬프트 (종료 토큰은 사회자에게만 알려줌) |
 | `council/protocol.py` | 순수 로직: 델타 버퍼, 턴 프롬프트 조립, 종료 토큰 판정 |
 | `council/backends/base.py` | 백엔드 인터페이스 (`stateful` 여부, `send()`, 한도/타임아웃 예외) |
+| `council/backends/manual.py` | 반자동 중계: 클립보드에 프롬프트 복사, 답변 복사 감지, 오복사 경고 |
+| `council/clipboard.py` | OS 클립보드 (Windows: Win32 API 직접, Linux: xclip 등) |
+| `council/console.py` | 클립보드 감시 중 r/q 명령 입력 |
 | `council/backends/mock.py` | 시드 고정 가짜 응답기 (종료·한도·타임아웃·오류 재현) |
 | `council/backends/gemini_cli.py` | Gemini CLI 헤드리스 호출, 출력 파싱, 한도/인증/타임아웃 분류, 사용량 표 |
 | `tests/fake_gemini.py` | 실제 CLI 의 입출력 규약을 흉내 낸 가짜 CLI (로그인 없이 테스트) |

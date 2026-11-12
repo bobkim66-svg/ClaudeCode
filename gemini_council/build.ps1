@@ -50,13 +50,15 @@ Push-Location $clean
 try {
     Invoke-Checked "exe --help" { & $cleanExe --help | Out-Null }
     Invoke-Checked "exe mock 토론 (1라운드)" {
-        & $cleanExe --topic "exe 점검 주제" --rounds 2 --mock-end-round 1 --log-dir "로그 폴더"
+        & $cleanExe --backend mock --topic "exe 점검 주제" --rounds 2 --mock-end-round 1 --log-dir "로그 폴더"
     }
     $md = Get-ChildItem -Path (Join-Path $clean "로그 폴더") -Filter "discussion_*.md"
     if ($md.Count -ne 1) { throw "회의록이 1개가 아님: $($md.Count)" }
     $text = Get-Content $md[0].FullName -Raw -Encoding UTF8
     if ($text -notmatch "사회자 종료 선언") { throw "회의록 내용 이상" }
     Write-Host "회의록 확인: $($md[0].FullName)" -ForegroundColor Green
+    # 반자동 모드의 핵심인 Windows 클립보드(ctypes)가 exe 안에서도 동작하는지
+    Invoke-Checked "exe 클립보드 점검" { & $cleanExe --clipboard-test }
 
     # Gemini CLI 가 설치되어 있으면 실제 연결 확인 (로그인 안 됐으면 exit 1 이 정상)
     if (Get-Command gemini.cmd -ErrorAction SilentlyContinue) {

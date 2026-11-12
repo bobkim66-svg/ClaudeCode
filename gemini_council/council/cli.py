@@ -4,11 +4,16 @@ from __future__ import annotations
 import argparse
 import shlex
 import sys
+import traceback
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from .backends import BackendError, ChatBackend, MockBackend
 from .backends.gemini_cli import GeminiCliBackend, GeminiCliConfig
+from .backends.manual import ManualRelayBackend
+from .clipboard import system_clipboard
+from .console import ConsoleCommands
 from .config import CouncilConfig
 from .orchestrator import Orchestrator
 from .roles import Role
@@ -22,7 +27,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rounds", type=int, default=CouncilConfig.max_rounds, help="최대 라운드 수")
     p.add_argument("--char-limit", type=int, default=CouncilConfig.char_limit, help="발언 권장 상한 [자]")
     p.add_argument("--log-dir", type=Path, default=Path("logs"), help="회의록 저장 폴더")
-    p.add_argument("--backend", choices=["mock", "gemini-cli"], default="mock")
+    p.add_argument("--backend", choices=["manual", "gemini-cli", "mock"], default="manual",
+                   help="manual=반자동(웹 탭에 직접 복사·붙여넣기, 기본), gemini-cli=무인, mock=오프라인 시험")
+    p.add_argument("--clipboard-test", action="store_true", help="클립보드 읽기/쓰기만 점검하고 종료")
 
     g = p.add_argument_group("gemini-cli 백엔드")
     g.add_argument("--gemini-cmd", default="gemini",
@@ -56,7 +63,10 @@ def _log(msg: str) -> None:
     print(f"{datetime.now():%H:%M:%S} {msg}", flush=True)
 
 
-def make_backend(args: argparse.Namespace, cfg: CouncilConfig) -> ChatBackend:
+def make_backend(args: argparse.Namespace, cfg: CouncilConfig,
+                 console: ConsoleCommands | None = None) -> ChatBackend:
+    if args.backend == "manual":
+        return ManualRelayBackend(commands=(console.poll if console else (lambda: None)))
     if args.backend == "mock":
         return MockBackend(stateful=not args.stateless, seed=args.seed,
                            end_at_round=args.mock_end_round, end_token=cfg.end_token)
@@ -91,12 +101,51 @@ def _force_utf8_output() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
-def main(argv: list[str] | None = None) -> int:
-    _force_utf8_output()
+INTERACTIVE_DEFAULT_ROUNDS = 3  # 반자동은 라운드당 복사·붙여넣기 4회 → 기본 3라운드(12회)
+
+
+def ask_interactive(read: Callable[[str], str] = input) -> list[str]:
+    """exe 를 더블클릭(인자 없음)했을 때 주제와 라운드를 물어 argv 를 만든다."""
+    print("=" * 64)
+    print(" 멀티 AI 구조화 토론 (반자동 모드)")
+    print("=" * 64)
+    topic = ""
+    while not topic:
+        topic = read("토론 주제를 입력하세요: ").strip()
+    rounds = INTERACTIVE_DEFAULT_ROUNDS
+    while True:
+        raw = read(f"최대 라운드 수 [Enter = {INTERACTIVE_DEFAULT_ROUNDS}]: ").strip()
+        if not raw:
+            break
+        if raw.isdigit() and int(raw) >= 1:
+            rounds = int(raw)
+            break
+        print("  1 이상의 숫자를 입력하세요.")
+    return ["--backend", "manual", "--topic", topic, "--rounds", str(rounds)]
+
+
+def clipboard_selftest() -> int:
+    """클립보드에 한글/이모지를 쓰고 다시 읽어 같은지 확인. 끝나면 원래 내용을 되돌린다."""
+    clip = system_clipboard()
+    before = clip.get_text()
+    sample = "클립보드 점검 ✓ 😀 \"따옴표\" & | < >\n두 번째 줄"
+    t0 = clip.change_token()
+    clip.set_text(sample)
+    ok = clip.get_text() == sample and clip.change_token() != t0
+    clip.set_text(before)
+    print(f"클립보드 점검: {'성공' if ok else '실패'}")
+    return 0 if ok else 1
+
+
+def run(argv: list[str], console: ConsoleCommands | None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.clipboard_test:
+        return clipboard_selftest()
     cfg = CouncilConfig(max_rounds=args.rounds, char_limit=args.char_limit, log_dir=args.log_dir)
-    backend = make_backend(args, cfg)
+    if args.backend == "manual" and console is None:
+        console = ConsoleCommands()
+    backend = make_backend(args, cfg, console)
     if args.check:
         return run_check(backend)
     if not args.topic:
@@ -108,6 +157,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"상세: {result.detail}")
     print(f"회의록: {result.log_path}")
     return 0 if result.reason.name in ("COMPLETED", "MAX_ROUNDS") else 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    _force_utf8_output()
+    interactive = argv is None and len(sys.argv) == 1 and sys.stdin is not None and sys.stdin.isatty()
+    if not interactive:
+        return run(sys.argv[1:] if argv is None else argv, None)
+
+    # exe 더블클릭: 질문으로 인자를 받고, 끝나면 창이 바로 닫히지 않게 Enter 를 기다린다.
+    console: ConsoleCommands | None = None
+    try:
+        console_argv = ask_interactive()
+        console = ConsoleCommands()  # 이후 모든 입력은 이 객체로 받는다 (input() 과 경합 방지)
+        return run(console_argv, console)
+    except BaseException:
+        traceback.print_exc()  # 오류를 숨기지 않고 보여 준 뒤 다시 던진다
+        raise
+    finally:
+        print("\nEnter 를 누르면 창이 닫힙니다.", flush=True)
+        if console is not None:
+            console.wait_line()
+        else:
+            try:
+                input()
+            except EOFError:
+                pass
 
 
 if __name__ == "__main__":

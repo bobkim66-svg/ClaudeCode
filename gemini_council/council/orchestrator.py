@@ -12,7 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from .backends.base import BackendError, ChatBackend, ResponseTimeout, UsageLimitReached
+from .backends.base import BackendError, ChatBackend, ResponseTimeout, UsageLimitReached, UserAbort
 from .config import CouncilConfig
 from .protocol import DiscussionState, Utterance, build_turn_prompt, is_termination
 from .roles import DEFAULT_ROLES, Role, validate_roles
@@ -116,6 +116,8 @@ class Orchestrator:
             reason = self._loop()
         except UsageLimitReached as e:
             reason, detail = StopReason.USAGE_LIMIT, str(e)
+        except UserAbort as e:
+            reason, detail = StopReason.USER_STOP, str(e)
         except ResponseTimeout as e:
             reason, detail = StopReason.TIMEOUT, str(e)
         except BackendError as e:
