@@ -61,16 +61,28 @@ def test_cli_requires_topic():
 
 def test_ask_interactive_defaults_and_validation(capsys):
     from council.cli import INTERACTIVE_DEFAULT_ROUNDS, ask_interactive
-    answers = iter(["", "  로봇 팔 제어  ", "", "abc", "0", ""])
+    answers = iter(["", "  로봇 팔 제어  ", "", "abc", "0", "", ""])
     argv = ask_interactive(read=lambda prompt: next(answers))
     assert argv == ["--backend", "manual", "--topic", "로봇 팔 제어", "--rounds", str(INTERACTIVE_DEFAULT_ROUNDS),
-                    "--agenda", "general"]
-    assert capsys.readouterr().out.count("1 이상의 숫자") == 2
-    answers = iter(["주제", "9", "2", "5"])  # 잘못된 유형 9 → 다시 물음 → 2(주제 검토)
+                    "--agenda", "general", "--interval", "5"]
+    out = capsys.readouterr().out
+    assert out.count("1 이상의 숫자") == 2
+    assert "최대 3라운드 = 12차례, 대기만 최대 약 55분" in out
+    answers = iter(["주제", "9", "2", "5", "-1", "x", "2.5"])  # 유형 9 재질문, 간격 -1·x 재질문
     argv = ask_interactive(read=lambda prompt: next(answers))
-    assert argv[-4:] == ["--rounds", "5", "--agenda", "topic-review"]
+    assert argv[-6:] == ["--rounds", "5", "--agenda", "topic-review", "--interval", "2.5"]
+    assert capsys.readouterr().out.count("0 이상의 숫자") == 2
 
 
 def test_default_backend_is_manual():
     from council.cli import build_parser
     assert build_parser().parse_args(["--topic", "t"]).backend == "manual"
+
+
+def test_interval_option_reaches_manual_backend():
+    from council.cli import build_parser, make_backend
+    from council.config import CouncilConfig
+    be = make_backend(build_parser().parse_args(["--topic", "t", "--interval", "5"]), CouncilConfig())
+    assert be.cfg.turn_interval_s == 300.0
+    be = make_backend(build_parser().parse_args(["--topic", "t"]), CouncilConfig())
+    assert be.cfg.turn_interval_s == 300.0  # 기본 5분

@@ -11,7 +11,7 @@ from typing import Callable
 
 from .backends import BackendError, ChatBackend, MockBackend
 from .backends.gemini_cli import GeminiCliBackend, GeminiCliConfig
-from .backends.manual import ManualRelayBackend
+from .backends.manual import ManualConfig, ManualRelayBackend
 from .clipboard import system_clipboard
 from .console import ConsoleCommands
 from .config import CouncilConfig
@@ -30,6 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backend", choices=["manual", "gemini-cli", "mock"], default="manual",
                    help="manual=반자동(웹 탭에 직접 복사·붙여넣기, 기본), gemini-cli=무인, mock=오프라인 시험")
     p.add_argument("--clipboard-test", action="store_true", help="클립보드 읽기/쓰기만 점검하고 종료")
+    p.add_argument("--interval", type=float, default=INTERACTIVE_DEFAULT_INTERVAL_MIN,
+                   help="반자동: 차례 사이 최소 간격 [분] (Gemini 에 메시지가 몰려 나가지 않게, 0 = 대기 없음)")
     p.add_argument("--agenda", choices=sorted(AGENDAS), default="general",
                    help="general=자유 토론, topic-review=연구 주제 검토(새로운 점·실현 가능성·위험·대안 점검)")
 
@@ -68,7 +70,8 @@ def _log(msg: str) -> None:
 def make_backend(args: argparse.Namespace, cfg: CouncilConfig,
                  console: ConsoleCommands | None = None) -> ChatBackend:
     if args.backend == "manual":
-        return ManualRelayBackend(commands=(console.poll if console else (lambda: None)))
+        return ManualRelayBackend(commands=(console.poll if console else (lambda: None)),
+                                  cfg=ManualConfig(turn_interval_s=args.interval * 60.0))
     if args.backend == "mock":
         return MockBackend(stateful=not args.stateless, seed=args.seed,
                            end_at_round=args.mock_end_round, end_token=cfg.end_token)
@@ -104,6 +107,7 @@ def _force_utf8_output() -> None:
 
 
 INTERACTIVE_DEFAULT_ROUNDS = 3  # 반자동은 라운드당 복사·붙여넣기 4회 → 기본 3라운드(12회)
+INTERACTIVE_DEFAULT_INTERVAL_MIN = 5.0  # 차례 사이 최소 간격 [분] (학교망에서 Google 트래픽 확인 화면이 뜬 뒤 요청)
 
 
 def ask_interactive(read: Callable[[str], str] = input) -> list[str]:
@@ -126,8 +130,24 @@ def ask_interactive(read: Callable[[str], str] = input) -> list[str]:
             rounds = int(raw)
             break
         print("  1 이상의 숫자를 입력하세요.")
+    interval = INTERACTIVE_DEFAULT_INTERVAL_MIN
+    while True:
+        raw = read(f"차례 사이 대기 시간(분) [Enter = {INTERACTIVE_DEFAULT_INTERVAL_MIN:g}]: ").strip()
+        if not raw:
+            break
+        try:
+            interval = float(raw)
+        except ValueError:
+            interval = -1.0
+        if interval >= 0:
+            break
+        print("  0 이상의 숫자를 입력하세요.")
+    turns = 4 * rounds
+    total_min = interval * (turns - 1)
+    print(f"  → 최대 {rounds}라운드 = {turns}차례, 대기만 최대 약 {total_min:g}분 (+ Gemini 답변 시간)")
     agenda = "topic-review" if kind == "2" else "general"
-    return ["--backend", "manual", "--topic", topic, "--rounds", str(rounds), "--agenda", agenda]
+    return ["--backend", "manual", "--topic", topic, "--rounds", str(rounds), "--agenda", agenda,
+            "--interval", f"{interval:g}"]
 
 
 def clipboard_selftest() -> int:

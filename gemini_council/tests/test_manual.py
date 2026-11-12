@@ -228,3 +228,108 @@ def test_command_clipboard_set_does_not_hang_on_daemonizing_tool(tmp_path):
     clip.set_text("한글 ✓")
     assert time.monotonic() - t0 < 2.0
     assert clip.get_text() == "한글 ✓"
+
+
+# ---------- 차례 사이 최소 간격 ----------
+
+class ClockUser:
+    """가짜 시계 + 대본. sleep 할 때마다 시간이 흐르고, 지정 시각에 동작을 수행한다."""
+
+    def __init__(self, clip, events):
+        self.clip, self.t, self.events, self.cmds = clip, 0.0, sorted(events, key=lambda e: e[0]), deque()
+        self.prompt_times = []
+        self._seen_seq = clip.seq
+
+    def sleep(self, dt):
+        self.t += dt
+        while self.events and self.events[0][0] <= self.t:
+            _, kind, val = self.events.pop(0)
+            if kind == "copy":
+                self.clip.set_text(val)
+            else:
+                self.cmds.append(val)
+
+    def command(self):
+        return self.cmds.popleft() if self.cmds else None
+
+
+def _interval_backend(events, interval_s=300.0):
+    clip = FakeClipboard()
+    user = ClockUser(clip, events)
+    out = []
+    be = ManualRelayBackend(clipboard=clip, out=out.append, commands=user.command,
+                            cfg=ManualConfig(poll_s=1.0, turn_interval_s=interval_s, countdown_s=60.0),
+                            sleep=user.sleep, clock=lambda: user.t)
+    be.open(DEFAULT_ROLES)
+    return be, clip, user, out
+
+
+def test_turn_interval_enforced_and_clipboard_untouched_while_waiting():
+    # 1번째 프롬프트 t=0, 답변 t=30 → 2번째 프롬프트는 t=300 이후에야 클립보드에
+    be, clip, user, out = _interval_backend([(30, "copy", "답 1"), (100, "copy", "기다리는 중 다른 복사"),
+                                             (330, "copy", "답 2")])
+    assert be.send(P, "프롬프트 1") == "답 1"
+    issued_at = []
+    orig_set = clip.set_text
+
+    def spy(text):
+        if text.startswith("프롬프트"):  # 프로그램이 넣는 것만 기록 (가짜 사용자의 복사는 제외)
+            issued_at.append((user.t, text))
+        orig_set(text)
+    clip.set_text = spy
+    assert be.send(C, "프롬프트 2") == "답 2"
+    assert issued_at[0][1] == "프롬프트 2" and issued_at[0][0] >= 300.0      # 5분 전에는 클립보드에 안 넣음
+    assert any("다음 차례 [탭 2 · 비평가] 까지 4분 30초 대기" in o for o in out)
+    assert sum("남음" in o for o in out) == 4                                  # 1분마다 남은 시간 (4:00, 3:00, 2:00, 1:00 시점)
+
+
+def test_first_turn_does_not_wait_and_zero_interval_disables():
+    be, clip, user, out = _interval_backend([(5, "copy", "답")])
+    be.send(P, "p")
+    assert not any("대기" in o and "⏸" in o for o in out)
+    be0, clip0, user0, out0 = _interval_backend([(5, "copy", "답 A"), (10, "copy", "답 B")], interval_s=0)
+    be0.send(P, "p1")
+    be0.send(C, "p2")
+    assert not any("⏸" in o for o in out0) and user0.t < 15
+
+
+def test_skip_wait_with_n_and_quit_with_q():
+    be, clip, user, out = _interval_backend([(10, "copy", "답 1"), (40, "cmd", "n"), (45, "copy", "답 2")])
+    be.send(P, "p1")
+    assert be.send(C, "p2") == "답 2" and user.t < 60
+    assert any("대기를 건너뜁니다" in o for o in out)
+    be2, *_ = _interval_backend([(10, "copy", "답 1"), (40, "cmd", "q")])
+    be2.send(P, "p1")
+    with pytest.raises(UserAbort):
+        be2.send(C, "p2")
+
+
+def test_interval_validation():
+    with pytest.raises(ValueError):
+        ManualConfig(turn_interval_s=-1)
+
+
+def test_full_discussion_interval_total_time(tmp_path):
+    """12차례(3라운드)면 간격 대기는 11번 → 마지막 프롬프트는 최소 11×300 s 뒤에 나간다."""
+    clip = FakeClipboard()
+    sim = TabSimulator(clip)
+    issue_times = []
+    orig = clip.set_text
+
+    def set_text(text):
+        if "의 차례입니다." in text:
+            issue_times.append(sim.t)
+        orig(text)
+    clip.set_text = set_text
+
+    def sleep(dt):
+        sim.t += dt
+        if clip.text and "의 차례입니다." in clip.text and sim.t >= issue_times[-1] + 20:  # 20 s 뒤 답변
+            sim.sleep(0)
+
+    be = ManualRelayBackend(clipboard=clip, out=lambda s: None, sleep=sleep, clock=lambda: sim.t,
+                            cfg=ManualConfig(poll_s=1.0, turn_interval_s=300.0))
+    res = Orchestrator(be, "주제", CouncilConfig(max_rounds=3, log_dir=tmp_path / "logs")).run()
+    assert len(res.utterances) == 12 and len(issue_times) == 12
+    gaps = [b - a for a, b in zip(issue_times, issue_times[1:])]
+    assert min(gaps) >= 300.0 - 1e-9 and issue_times[-1] >= 11 * 300.0

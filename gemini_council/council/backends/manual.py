@@ -22,11 +22,22 @@ PROMPT_MARKERS = ("[토론 규칙]", "[지난 발언 이후 새 발언]", "의 �
 
 @dataclass(frozen=True)
 class ManualConfig:
-    """poll_s: 클립보드 확인 간격 [s]. reminder_s: 안내 재출력 간격 [s]. preview_chars: 미리보기 길이 [자]."""
+    """poll_s: 클립보드 확인 간격 [s]. reminder_s: 안내 재출력 간격 [s]. preview_chars: 미리보기 길이 [자].
+
+    turn_interval_s: 연속한 두 차례의 메시지를 내보내는 최소 간격 [s] (이전 메시지를 클립보드에 넣은 시점 기준).
+        Gemini 에 메시지가 몰려 나가지 않게 한다. 0 이면 대기 없음.
+    countdown_s: 대기 중 남은 시간 표시 간격 [s].
+    """
 
     poll_s: float = 0.3
     reminder_s: float = 120.0
     preview_chars: int = 60
+    turn_interval_s: float = 0.0
+    countdown_s: float = 60.0
+
+    def __post_init__(self) -> None:
+        if self.turn_interval_s < 0:
+            raise ValueError(f"turn_interval_s 는 0 이상이어야 함: {self.turn_interval_s}")
 
 
 @dataclass(frozen=True)
@@ -41,6 +52,11 @@ class TurnRecord:
 def _preview(text: str, n: int) -> str:
     one = " ".join(text.split())
     return one if len(one) <= n else one[:n] + "…"
+
+
+def _fmt_mmss(seconds: float) -> str:
+    s = max(0, int(round(seconds)))
+    return f"{s // 60}분 {s % 60:02d}초"
 
 
 def check_reply(text: str, prompt: str, previous: str | None) -> str | None:
@@ -76,6 +92,7 @@ class ManualRelayBackend(ChatBackend):
         self._sleep, self._clock = sleep, clock
         self._tabs: dict[str, int] = {}
         self._last_reply: str | None = None
+        self._last_issue: float | None = None  # 직전 메시지를 클립보드에 넣은 시각 [s]
         self.turns: list[TurnRecord] = []
 
     def open(self, roles: tuple[Role, ...]) -> None:
@@ -99,7 +116,9 @@ class ManualRelayBackend(ChatBackend):
     def send(self, role: Role, prompt: str) -> str:
         assert self._clip is not None, "open() 전에 send() 호출됨"
         tab = self._tabs.get(role.key, 0)
+        self._wait_turn_interval(tab, role.name)
         self._clip.set_text(prompt)
+        self._last_issue = self._clock()
         baseline = self._clip.change_token()
         self.out(f"\n▶ [탭 {tab} · {role.name}] 에 붙여 넣으세요 (Ctrl+V, Enter) — {len(prompt)}자 복사됨")
         header = next((ln for ln in prompt.splitlines() if "의 차례입니다." in ln), prompt)
@@ -132,6 +151,36 @@ class ManualRelayBackend(ChatBackend):
                 last_note = self._clock()
                 self.out(f"   … [탭 {tab} · {role.name}] 답변 복사를 기다리는 중 (r: 다시 복사, q: 저장 후 종료)")
             self._sleep(self.cfg.poll_s)
+
+    def _wait_turn_interval(self, tab: int, role_name: str) -> None:
+        """직전 메시지를 내보낸 뒤 turn_interval_s 가 지날 때까지 기다린다.
+
+        기다리는 동안에는 다음 메시지를 클립보드에 넣지 않는다 (미리 붙여 넣는 실수 방지).
+        n + Enter = 대기 건너뛰기, q + Enter = 저장 후 종료.
+        """
+        if self._last_issue is None or self.cfg.turn_interval_s <= 0:
+            return
+        deadline = self._last_issue + self.cfg.turn_interval_s
+        remaining = deadline - self._clock()
+        if remaining <= 0:
+            return
+        self.out(f"\n⏸ 다음 차례 [탭 {tab} · {role_name}] 까지 {_fmt_mmss(remaining)} 대기 "
+                 "(Gemini 창은 그대로 두세요. n + Enter: 바로 진행, q + Enter: 저장 후 종료)")
+        last_note = self._clock()
+        while True:
+            cmd = self.commands()
+            if cmd == "q":
+                raise UserAbort("사용자가 q 로 중단")
+            if cmd == "n":
+                self.out("   대기를 건너뜁니다.")
+                return
+            now = self._clock()
+            if now >= deadline:
+                return
+            if now - last_note >= self.cfg.countdown_s:
+                last_note = now
+                self.out(f"   … {_fmt_mmss(deadline - now)} 남음")
+            self._sleep(min(self.cfg.poll_s, max(deadline - now, 0.0)))
 
     def usage_report(self) -> str:
         if not self.turns:
