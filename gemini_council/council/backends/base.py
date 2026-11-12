@@ -44,3 +44,7 @@ class ChatBackend(ABC):
 
     def close(self) -> None:  # noqa: B027 - 선택적 오버라이드
         """자원 정리. 기본은 아무것도 안 함."""
+
+    def usage_report(self) -> str:
+        """회의록 끝에 붙일 사용량 요약 (마크다운). 없으면 빈 문자열."""
+        return ""

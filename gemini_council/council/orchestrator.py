@@ -130,7 +130,8 @@ class Orchestrator:
             finally:
                 finished = self.clock()
                 md = render_markdown(self.topic, self.state.utterances, self.cfg,
-                                     reason.value, started, finished, detail)
+                                     reason.value, started, finished, detail,
+                                     appendix=self.backend.usage_report())
                 log_path = save_transcript(md, self.cfg.log_dir, finished)
                 self.on_event(f"종료: {reason.value}. 회의록 저장: {log_path}")
         if crash is not None:

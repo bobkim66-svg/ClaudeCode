@@ -16,6 +16,7 @@ def render_markdown(
     started: datetime,
     finished: datetime,
     note: str = "",
+    appendix: str = "",
 ) -> str:
     """회의록 마크다운 문자열 생성. 권장 길이를 넘은 발언은 표시만 하고 내용은 자르지 않는다."""
     rounds = max((u.round for u in utterances), default=0)
@@ -38,6 +39,8 @@ def render_markdown(
             lines += ["", f"## 라운드 {current}"]
         flag = " ⚠ 길이 초과" if u.chars > cfg.char_limit else ""
         lines += ["", f"### {u.speaker_name} ({u.chars}자){flag}", "", u.text.strip()]
+    if appendix:
+        lines += ["", "## 사용량", "", appendix]
     return "\n".join(lines) + "\n"
 
 
