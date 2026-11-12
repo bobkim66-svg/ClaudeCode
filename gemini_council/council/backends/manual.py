@@ -51,7 +51,7 @@ def check_reply(text: str, prompt: str, previous: str | None) -> str | None:
     if s == prompt.strip():
         return "보낼 메시지가 그대로 복사됨 (아직 붙여 넣기 전이면 정상)"
     if any(m in s for m in PROMPT_MARKERS):
-        return "내가 보낸 메시지를 복사한 것 같음. Gemini 답변 아래의 '복사' 아이콘을 눌러야 함"
+        return "내가 보낸 메시지를 복사한 것 같음. 답변 맨 아래 아이콘 줄(좋아요·싫어요·다시 생성·복사·더보기) 중 4번째 '겹친 네모' 복사 아이콘을 눌러야 함"
     if previous is not None and s == previous.strip():
         return "직전 탭의 답변과 똑같음. 이번 탭의 새 답변을 복사했는지 확인"
     return None
@@ -89,7 +89,8 @@ class ManualRelayBackend(ChatBackend):
             lines.append(f"   탭 {self._tabs[r.key]}: {r.name}{hint}")
         lines += [" 진행 방법 (매 차례 반복):",
                   "   1) 안내된 탭에서 Ctrl+V, Enter",
-                  "   2) 답변이 끝나면 답변 아래 '복사' 아이콘 클릭 → 자동으로 다음 차례로",
+                  "   2) 답변이 끝나면 답변 맨 아래 아이콘 줄(좋아요·싫어요·다시 생성·복사·더보기) 중 4번째 '겹친 네모' 복사 아이콘 클릭",
+                  "      → 프로그램이 자동으로 다음 차례로 넘어감 (코드 블록 위의 복사 버튼, 내 질문의 복사 버튼 아님)",
                   " ※ 기다리는 동안 다른 글을 복사하면 그 글이 답변으로 처리됩니다.",
                   " 명령: r + Enter = 보낼 메시지 다시 복사,  q + Enter = 저장 후 종료",
                   "=" * 64, ""]
@@ -103,7 +104,7 @@ class ManualRelayBackend(ChatBackend):
         self.out(f"\n▶ [탭 {tab} · {role.name}] 에 붙여 넣으세요 (Ctrl+V, Enter) — {len(prompt)}자 복사됨")
         header = next((ln for ln in prompt.splitlines() if "의 차례입니다." in ln), prompt)
         self.out(f"   보낼 내용: {_preview(header, self.cfg.preview_chars)}")
-        self.out("   답변이 끝나면 Gemini 의 '복사' 아이콘을 누르세요. 기다리는 중…")
+        self.out("   답변이 끝나면 답변 맨 아래 아이콘 줄(좋아요·싫어요·다시 생성·복사·더보기) 중 4번째 '겹친 네모' 복사 아이콘을 누르세요. 기다리는 중…")
 
         t0 = last_note = self._clock()
         while True:
