@@ -43,7 +43,8 @@ _MODE_CANDIDATES_JS = r"""
   return out;
 }
 """
-PROBE_TOPIC = "'OK' 라는 영어 단어의 어원을 출처와 함께 3문장으로 조사"
+# 처음 기본값('OK' 어원 3문장)은 실제 실행에서 "언어 모델로서 생성할 수 없다" 답변을 받아 사용자 지정 주제로 교체
+PROBE_TOPIC = "젠슨 황의 사퇴가 가져다줄 국제적 경제 시스템의 변화 및 대한민국의 경제 전략 방향성은 어떻게 달라지는가?"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,7 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out-dir", type=Path, default=Path("research"), help="보고서 저장 폴더")
     p.add_argument("--web-login", action="store_true", help="전용 Chrome 프로필로 Gemini 로그인 (최초 1회)")
     p.add_argument("--probe", action="store_true", help="화면 구조 진단: 버튼·메뉴 이름만 확인 (메시지 안 보냄)")
-    p.add_argument("--probe-run", action="store_true", help="짧은 주제로 Deep Research 1회 실제 진행 (사용량 1회)")
+    p.add_argument("--probe-run", action="store_true", help="시험 주제로 Deep Research 1회 실제 진행 (사용량 1회)")
+    p.add_argument("--probe-topic", default=PROBE_TOPIC, help="--probe-run 에 쓸 주제")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help="Chrome 원격 디버깅 포트")
     p.add_argument("--profile-dir", type=Path, default=None, help="전용 Chrome 프로필 폴더")
     p.add_argument("--web-url", default=None, help="(시험용) 새 채팅 주소 대신 열 주소")
@@ -82,7 +84,7 @@ def configs(args: argparse.Namespace) -> tuple[WebConfig, ResearchConfig]:
 
 
 def research_probe(web: WebConfig, rc: ResearchConfig, run: bool, default_mode: str,
-                   out: Callable[[str], None] = print) -> int:
+                   out: Callable[[str], None] = print, topic: str = PROBE_TOPIC) -> int:
     """메뉴를 열어 실제 이름을 기록한다. run=True 면 짧은 주제로 Deep Research 를 끝까지 1회 진행."""
     folder = rc.out_dir / f"probe_{datetime.now():%Y%m%d_%H%M%S}"
     folder.mkdir(parents=True, exist_ok=True)
@@ -143,7 +145,7 @@ def research_probe(web: WebConfig, rc: ResearchConfig, run: bool, default_mode: 
         ok = bool(model_btn and tools)
         if run and ok:
             try:
-                result = r.run_one(Topic(default_mode, PROBE_TOPIC))
+                result = r.run_one(Topic(default_mode, topic))
                 report["steps"]["run"] = result
                 ok = result["status"] == "done"
             except BackendError as e:
@@ -197,7 +199,7 @@ def run(argv: list[str], console: ConsoleCommands | None) -> int:
         if web_login(web, read=read) != 0:
             return 1
     if args.probe or args.probe_run:
-        return research_probe(web, rc, run=args.probe_run, default_mode=args.mode)
+        return research_probe(web, rc, run=args.probe_run, default_mode=args.mode, topic=args.probe_topic)
     if not args.topics.exists():
         if console is None or not sys.stdin.isatty():
             print(f"주제 목록 파일이 없음: {args.topics}")

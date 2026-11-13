@@ -239,3 +239,9 @@ def test_mode_button_patterns_distinguish_hydrogen_from_thinking():
     general, think = (re.compile(S["mode_button_patterns"][m]) for m in ("일반", "사고"))
     assert general.search("Hydrogen") and not general.search("Hydrogen Thinking")
     assert think.search("Hydrogen Thinking") and not think.search("Hydrogen")
+
+
+def test_probe_topic_option():
+    from council.research_cli import PROBE_TOPIC, build_parser
+    assert build_parser().parse_args([]).probe_topic == PROBE_TOPIC and "젠슨 황" in PROBE_TOPIC
+    assert build_parser().parse_args(["--probe-topic", "다른 주제"]).probe_topic == "다른 주제"
