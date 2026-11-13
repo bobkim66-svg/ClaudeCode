@@ -18,7 +18,7 @@ from .console import ConsoleCommands
 from .config import CouncilConfig
 from .orchestrator import Orchestrator
 from .session import SessionError, find_unfinished, load_state
-from .web_tools import web_login, web_probe
+from .web_tools import register_tabs, web_login, web_probe
 from .roles import AGENDAS, Role
 
 _GC = GeminiCliConfig()
@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--web-login", action="store_true", help="전용 Chrome 프로필로 Gemini 로그인 (최초 1회)")
     w.add_argument("--web-probe", action="store_true", help="새 채팅에 시험 메시지 1개를 보내 화면 구조 진단")
     w.add_argument("--new-chats", action="store_true", help="저장된 채팅 4개 대신 새 채팅 4개로 시작 (tabs.json 백업)")
+    w.add_argument("--set-tabs", action="store_true", help="사용할 기존 채팅 4개의 주소를 다시 등록 (tabs.json 백업)")
     w.add_argument("--answer-timeout", type=float, default=10.0, help="답변 1개를 기다리는 최대 시간 [분]")
     w.add_argument("--port", type=int, default=9222, help="Chrome 원격 디버깅 포트")
     w.add_argument("--profile-dir", type=Path, default=None, help="전용 Chrome 프로필 폴더 (기본: 사용자 앱 데이터)")
@@ -229,6 +230,8 @@ def run(argv: list[str], console: ConsoleCommands | None) -> int:
     args = parser.parse_args(argv)
     if args.clipboard_test:
         return clipboard_selftest()
+    if args.set_tabs:
+        args.backend = "web"  # 채팅 주소 등록은 자동 모드 설정
     if args.web_login:
         return web_login(web_config(args))
     if args.web_probe:
@@ -257,10 +260,16 @@ def run(argv: list[str], console: ConsoleCommands | None) -> int:
             read = (lambda q: (print(q, end="", flush=True), console.wait_line())[1] or "") if console else input
             if web_login(wcfg, read=read) != 0:
                 return 1
-        if args.new_chats and wcfg.tabs_file.exists():
+        if (args.new_chats or args.set_tabs) and wcfg.tabs_file.exists():
             backup = wcfg.tabs_file.with_name(f"tabs_{datetime.now():%Y%m%d_%H%M%S}.bak.json")
             wcfg.tabs_file.rename(backup)
-            print(f"저장된 채팅 주소를 {backup.name} 로 백업하고 새 채팅 4개로 시작합니다.")
+            print(f"저장된 채팅 주소를 {backup.name} 로 백업했습니다.")
+        # 채팅 주소가 아직 없으면(첫 실행) 기존 채팅을 쓸지 먼저 묻는다. 사람이 없는 실행(파이프 입력)은 새 채팅.
+        if not args.new_chats and not wcfg.tabs_file.exists() and console is not None and sys.stdin.isatty():
+            read = lambda q: (print(q, end="", flush=True), console.wait_line())[1] or ""  # noqa: E731
+            register_tabs(wcfg, read=read)
+        if args.set_tabs and not args.topic:
+            return 0
     backend = make_backend(args, cfg, console)
     if args.check:
         return run_check(backend)

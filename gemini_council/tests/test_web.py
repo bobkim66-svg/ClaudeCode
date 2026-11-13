@@ -145,3 +145,35 @@ def test_selectors_override(tmp_path):
     f.write_text(json.dumps({"inptu": ["오타"]}), encoding="utf-8")
     with pytest.raises(BackendError, match="알 수 없는 항목"):
         load_selectors(f)
+
+
+def test_register_tabs_prompts_each_role(tmp_path):
+    from council.web_tools import register_tabs
+    cfg = _cfg(tmp_path)
+    a = "https://gemini.google.com/app/4487e86017d737b7"
+    b = "https://gemini.google.com/u/1/app/dd79b3a69cc4fbda"
+    answers = iter([a, "그냥 글자", f'"{b}"', a, "", "https://gemini.google.com/app/abc123"])
+    out = []
+    urls = register_tabs(cfg, read=lambda q: next(answers), out=out.append)
+    # 제안자 a / 비평가: 잘못된 형식 → b(따옴표 제거) / 대안: a 중복 거부 → Enter(새 채팅) / 사회자 abc123
+    assert urls == {"proposer": a, "critic": b, "moderator": "https://gemini.google.com/app/abc123"}
+    assert json.loads(cfg.tabs_file.read_text(encoding="utf-8")) == urls
+    assert any("형식" in o for o in out) and any("이미 다른 역할" in o for o in out)
+
+
+def test_partial_registration_mixes_saved_and_new_chats(tmp_path, backends):
+    """등록된 역할은 그 채팅을, 비워 둔 역할은 새 채팅을 연다."""
+    from council.web_tools import register_tabs
+    cfg = _cfg(tmp_path)
+    saved = PAGE + "#cexisting1"
+    answers = iter([saved, "", "", ""])
+    register_tabs(cfg, read=lambda q: next(answers), out=lambda s: None)
+    be = _backend(backends, cfg)
+    be.open(DEFAULT_ROLES)
+    assert be._pages["proposer"].url == saved and be._pages["critic"].url == PAGE
+
+
+def test_set_tabs_implies_web_backend():
+    from council.cli import build_parser
+    args = build_parser().parse_args(["--set-tabs"])
+    assert args.set_tabs and args.backend == "manual"   # run() 에서 web 으로 바뀜 (아래 동작은 run 에서 확인)

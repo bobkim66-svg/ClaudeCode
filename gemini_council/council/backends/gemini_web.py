@@ -144,7 +144,7 @@ class GeminiWebBackend(ChatBackend):
                 page.goto(url or self.cfg.new_chat_url, timeout=self.cfg.page_load_timeout_s * 1000)
             self._pages[r.key] = page
             self._wait_ready(page, r)
-            where = "기존 채팅 재사용" if url else "새 채팅 (첫 답변 후 주소 저장)"
+            where = f"등록된 채팅 사용 (…{url[-16:]})" if url else "새 채팅 (첫 답변 후 주소 저장)"
             self.log(f"자동 모드: 탭 {self._tabs[r.key]} · {r.name} 준비 — {where}")
 
     def close(self) -> None:

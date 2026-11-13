@@ -105,3 +105,34 @@ def web_probe(cfg: WebConfig, out_dir: Path, out: Callable[[str], None] = print)
     out(f"진단 결과 폴더: {folder}  (probe_report.json + 화면 캡처 2장)")
     out("※ 화면 캡처에는 Gemini 화면(왼쪽 대화 목록 포함)이 그대로 찍힙니다. 공유 전에 확인하세요.")
     return code
+
+
+# 실제 Gemini 채팅 주소 (여러 계정이면 /u/1/ 이 붙는다). 시험용 file:// 주소도 허용.
+_CHAT_URL = __import__("re").compile(r"^(https://gemini\.google\.com/(u/\d+/)?app/[0-9A-Za-z]+|file://\S+)")
+
+
+def register_tabs(cfg: WebConfig, read: Callable[[str], str], out: Callable[[str], None] = print,
+                  roles: tuple[Role, ...] | None = None) -> dict[str, str]:
+    """이미 만들어 둔 채팅 4개의 주소를 하나씩 받아 tabs.json 에 저장한다. Enter 면 그 역할은 새 채팅."""
+    from .roles import DEFAULT_ROLES
+    roles = roles or DEFAULT_ROLES
+    out("사용할 Gemini 채팅 주소를 등록합니다 (한 번만 하면 다음부터 재사용).")
+    out("  전용 Chrome 창에서 해당 채팅을 열고 주소창의 주소(https://gemini.google.com/app/...)를 복사해 붙여 넣으세요.")
+    out("  Enter 만 누르면 그 역할은 새 채팅을 만듭니다.")
+    urls: dict[str, str] = {}
+    for i, r in enumerate(roles, 1):
+        while True:
+            raw = (read(f"  탭 {i} · {r.name} 채팅 주소: ") or "").strip().strip('"')
+            if not raw:
+                break
+            if not _CHAT_URL.match(raw):
+                out("    https://gemini.google.com/app/... 형식의 채팅 주소가 아닙니다. 다시 붙여 넣으세요.")
+                continue
+            if raw in urls.values():
+                out("    이미 다른 역할에 등록한 주소입니다. 역할마다 다른 채팅이어야 합니다.")
+                continue
+            urls[r.key] = raw
+            break
+    cfg.tabs_file.write_text(json.dumps(urls, ensure_ascii=False, indent=2), encoding="utf-8")
+    out(f"  저장: {cfg.tabs_file.resolve()} (등록 {len(urls)}개, 새 채팅 {len(roles) - len(urls)}개)")
+    return urls
