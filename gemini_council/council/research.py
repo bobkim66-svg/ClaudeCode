@@ -41,8 +41,14 @@ DEFAULT_RESEARCH_SELECTORS: dict[str, Any] = {
                      "button:has-text('Thinking')", "button:has-text('Flash')",
                      "[role='button']:has-text('Thinking')", "[role='button']:has-text('Flash')",
                      "[aria-haspopup]:has-text('Thinking')", "[aria-haspopup]:has-text('Flash')"],
-    "mode_words": ["Thinking", "Flash", "사고", "빠른"],
-    "mode_texts": {"일반": ["Flash", "빠른", "일반"], "사고": ["Thinking", "사고"]},
+    "mode_words": ["Thinking", "Hydrogen", "Flash", "사고", "빠른"],
+    # 실제 화면(2026-11-13 진단): 모델 메뉴 = '일상생활 지원 / 4 Hydrogen', '복잡한 문제 해결 / 4 Hydrogen Thinking',
+    # '상세한 조사 / 3.1 Pro'. 모델 버튼 글자 = 'Hydrogen Thinking' (일반 모드면 'Hydrogen' 으로 추정).
+    # mode_texts: 메뉴에서 누를 항목 이름 (앞에서부터 시도)
+    "mode_texts": {"일반": ["일상생활 지원", "Flash", "빠른"], "사고": ["복잡한 문제 해결", "Thinking", "사고"]},
+    # mode_button_patterns: 선택 뒤 모델 버튼 글자로 확인 (정규식). 'Hydrogen' 은 'Hydrogen Thinking' 에도 들어
+    # 있으므로 일반은 'Thinking 이 뒤따르지 않는 Hydrogen' 으로 판정한다.
+    "mode_button_patterns": {"일반": r"Hydrogen(?!\s*Thinking)|Flash|빠른", "사고": r"Thinking|사고"},
     "start_texts": ["연구 시작", "Start research"],
     "done_texts": ["Docs로 내보내기", "Export to Docs", "공유 및 내보내기"],
     "report": ["deep-research-immersive-panel .markdown", "deep-research-immersive-panel", "immersive-panel",
@@ -241,10 +247,11 @@ class ResearchRunner:
 
     def select_mode(self, page: Any, mode: str) -> None:
         wanted = self.sel["mode_texts"][mode]
+        is_mode = re.compile(self.sel["mode_button_patterns"][mode])
         btn = self.find_model_button(page)
         if btn is None:
             raise BackendError("모델 선택 버튼을 찾을 수 없음 (--probe 로 화면 구조 확인)")
-        if any(w in btn.inner_text() for w in wanted):
+        if is_mode.search(btn.inner_text()):
             return  # 이미 원하는 모드
         btn.click()
         item = self._menu_item(page, wanted)
@@ -254,7 +261,7 @@ class ResearchRunner:
         item.click()
         page.wait_for_timeout(300)  # 메뉴가 닫히고 표시가 바뀔 시간
         btn = self.find_model_button(page, wait_s=3.0)
-        if btn is None or not any(w in btn.inner_text() for w in wanted):
+        if btn is None or not is_mode.search(btn.inner_text()):
             raise BackendError(f"모델을 '{mode}' 로 바꾸지 못함 (현재: {btn.inner_text() if btn else '?'})")
 
     def enable_deep_research(self, page: Any) -> None:

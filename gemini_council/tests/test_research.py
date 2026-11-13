@@ -118,7 +118,7 @@ def test_sent_message_has_mode_deep_research_and_template(tmp_path, cleanup):
     r.ctx = r.web.connect()
     result = r.run_one(Topic("일반", "열화상 깊이 추정"))
     sent = r.ctx.pages[-1].locator("user-query").first.inner_text()
-    assert sent.startswith("[Hydrogen Flash + Deep Research] 열화상 깊이 추정") and "[작성 요구]" in sent
+    assert sent.startswith("[Hydrogen + Deep Research] 열화상 깊이 추정") and "[작성 요구]" in sent
     assert result["status"] == "done" and result["chat_url"].startswith(PAGE)
     r.cfg.template = False
     r.run_one(Topic("사고", "원문만"))
@@ -134,7 +134,7 @@ def test_mode_and_tools_actually_selected(tmp_path, cleanup):
     page = r.ctx.new_page()
     page.goto(PAGE)
     r.select_mode(page, "일반")
-    assert page.locator("#model-label").inner_text() == "Hydrogen Flash"
+    assert page.locator("#model-label").inner_text() == "Hydrogen"
     r.select_mode(page, "사고")
     assert page.locator("#model-label").inner_text() == "Hydrogen Thinking"
     r.enable_deep_research(page)
@@ -212,7 +212,7 @@ def test_mode_selection_when_picker_is_not_a_button(tmp_path, cleanup):
     page.goto(PAGE + "?picker=div")
     assert r._visible(page, r.sel["model_button"]) is None          # 규칙으로는 못 찾는 상황 재현
     r.select_mode(page, "일반")
-    assert page.locator("#model-label").inner_text() == "Hydrogen Flash"
+    assert page.locator("#model-label").inner_text() == "Hydrogen"
     r.select_mode(page, "사고")
     assert page.locator("#model-label").inner_text() == "Hydrogen Thinking"
 
@@ -227,6 +227,15 @@ def test_mode_selection_shadow_dom_or_late_render(tmp_path, cleanup, picker):
     page = r.ctx.new_page()
     page.goto(PAGE + f"?picker={picker}")
     r.select_mode(page, "일반")
-    assert page.locator("#model-label").inner_text() == "Hydrogen Flash"   # CSS 는 열린 shadow DOM 을 통과
+    assert page.locator("#model-label").inner_text() == "Hydrogen"   # CSS 는 열린 shadow DOM 을 통과
     r.select_mode(page, "사고")
     assert page.locator("#model-label").inner_text() == "Hydrogen Thinking"
+
+
+def test_mode_button_patterns_distinguish_hydrogen_from_thinking():
+    """'Hydrogen' 이 'Hydrogen Thinking' 안에도 들어 있어 단순 포함 검사는 일반/사고를 혼동한다 → 정규식으로 구분."""
+    import re
+    from council.research import DEFAULT_RESEARCH_SELECTORS as S
+    general, think = (re.compile(S["mode_button_patterns"][m]) for m in ("일반", "사고"))
+    assert general.search("Hydrogen") and not general.search("Hydrogen Thinking")
+    assert think.search("Hydrogen Thinking") and not think.search("Hydrogen")

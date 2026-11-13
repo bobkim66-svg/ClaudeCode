@@ -35,9 +35,10 @@
   <div role="menuitem" id="dr-item">Deep Research</div>
 </div>
 <div id="model-menu" class="menu hidden" role="menu">
-  <div role="menuitem">Hydrogen Flash</div>
-  <div role="menuitem">Hydrogen Thinking</div>
-  <div role="menuitem">Pro</div>
+  <!-- 실제 화면(2026-11-13 진단)의 메뉴 이름: 설명 + 모델 이름 -->
+  <div role="menuitem" data-label="Hydrogen">일상생활 지원<br>4 Hydrogen<br>신규</div>
+  <div role="menuitem" data-label="Hydrogen Thinking">복잡한 문제 해결<br>4 Hydrogen Thinking</div>
+  <div role="menuitem" data-label="Pro">상세한 조사<br>3.1 Pro</div>
 </div>
 <script>
 const q = new URLSearchParams(location.search);
@@ -80,7 +81,7 @@ $("dr-item").addEventListener("click", () => {
 });
 (document.querySelector(".model-button, .mode-pill") || document.querySelector("mode-switcher")?.shadowRoot?.querySelector(".pill"))?.addEventListener("click", () => { hideMenus(); $("model-menu").classList.remove("hidden"); });
 document.querySelectorAll("#model-menu [role=menuitem]").forEach(el => el.addEventListener("click", () => {
-  $("model-label").textContent = el.textContent; hideMenus();
+  $("model-label").textContent = el.dataset.label; hideMenus();
 }));
 
 function addResponse() {
