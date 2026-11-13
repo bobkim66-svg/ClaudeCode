@@ -245,3 +245,15 @@ def test_probe_topic_option():
     from council.research_cli import PROBE_TOPIC, build_parser
     assert build_parser().parse_args([]).probe_topic == PROBE_TOPIC and "젠슨 황" in PROBE_TOPIC
     assert build_parser().parse_args(["--probe-topic", "다른 주제"]).probe_topic == "다른 주제"
+
+
+def test_plan_wait_is_60_minutes_and_other_waits_unchanged():
+    """사용자 요청: '연구 시작' 버튼 대기만 60분, 나머지(완료 판단 2분/15초, 최대 180분)는 그대로."""
+    rc = ResearchConfig()
+    assert rc.plan_timeout_s == 3600 and rc.stable_s == 120 and rc.done_stable_s == 15
+    assert rc.research_timeout_s == 180 * 60
+    from council.research_cli import build_parser, configs
+    _, cli = configs(build_parser().parse_args([]))
+    assert (cli.plan_timeout_s, cli.stable_s, cli.done_stable_s) == (3600, 120, 15)
+    _, cli2 = configs(build_parser().parse_args(["--plan-minutes", "90"]))
+    assert cli2.plan_timeout_s == 5400

@@ -129,7 +129,7 @@ class ResearchConfig:
     """시간 단위 [s]. interval_s: 주제 사이 고정 간격 (직전 연구가 끝난 시각 기준)."""
 
     interval_s: float = 12 * 60.0
-    plan_timeout_s: float = 5 * 60.0
+    plan_timeout_s: float = 60 * 60.0     # '연구 시작' 버튼 대기 (5분 → 60분: 5분 만에 실패 판정된 경험, 사용자 요청)
     research_timeout_s: float = 180 * 60.0
     stable_s: float = 120.0          # 중지 버튼이 없고 보고서가 이만큼 그대로면 완료
     done_stable_s: float = 15.0      # '내보내기' 버튼이 보이면 이만큼만 그대로여도 완료

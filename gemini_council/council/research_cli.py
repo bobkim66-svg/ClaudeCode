@@ -63,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile-dir", type=Path, default=None, help="전용 Chrome 프로필 폴더")
     p.add_argument("--web-url", default=None, help="(시험용) 새 채팅 주소 대신 열 주소")
     p.add_argument("--chrome-arg", action="append", default=[], help="(시험용) Chrome 추가 옵션")
+    p.add_argument("--plan-minutes", type=float, default=60.0, help="'연구 시작' 버튼을 기다리는 최대 시간 [분]")
     p.add_argument("--stable-sec", type=float, default=120.0, help="(시험용) 보고서가 그대로여야 하는 시간 [s]")
     return p
 
@@ -79,6 +80,7 @@ def configs(args: argparse.Namespace) -> tuple[WebConfig, ResearchConfig]:
         web.new_chat_url = args.web_url
     rc = ResearchConfig(interval_s=args.interval * 60.0, research_timeout_s=args.max_minutes * 60.0,
                         stable_s=args.stable_sec, done_stable_s=min(15.0, args.stable_sec), out_dir=args.out_dir,
+                        plan_timeout_s=args.plan_minutes * 60.0,
                         template=not args.raw)
     return web, rc
 
