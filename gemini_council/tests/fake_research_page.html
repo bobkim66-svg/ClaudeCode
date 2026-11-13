@@ -45,12 +45,21 @@ const mode = q.get("mode") || "normal";
 const gen = parseInt(q.get("gen") || "40", 10);
 const planDelay = parseInt(q.get("plan") || "300", 10);
 // picker=div: 모델 선택이 <button> 이 아니라 aria 정보 없는 div 인 경우 (실제 화면 진단에서 button 규칙이 안 맞음)
+// picker=shadow: 모델 표시가 웹 컴포넌트(shadow DOM) 안에 있음, picker=late: 1.5 초 뒤에 나타남
+if (q.get("picker") === "shadow" || q.get("picker") === "late") {
+  const b = document.querySelector(".model-button");
+  const host = document.createElement("mode-switcher");
+  const root = host.attachShadow({mode: "open"});
+  root.innerHTML = '<div role="button" class="pill"><span id="model-label">Hydrogen Thinking</span> ⌄</div>';
+  b.replaceWith(host);
+  if (q.get("picker") === "late") { host.style.display = "none"; setTimeout(() => host.style.display = "", 1500); }
+}
 if (q.get("picker") === "div") {
   const b = document.querySelector(".model-button");
   const d = document.createElement("div"); d.className = "mode-pill"; d.innerHTML = b.innerHTML;
   b.replaceWith(d);
 }
-const $ = id => document.getElementById(id);
+const $ = id => document.getElementById(id) || document.querySelector("mode-switcher")?.shadowRoot?.getElementById(id);
 let dr = false;
 
 if (mode === "logout") { $("composer").remove(); }
@@ -69,7 +78,7 @@ $("dr-item").addEventListener("click", () => {
   if ($("model-label").textContent === "Pro") { alert("Pro 에서는 Deep Research 를 쓸 수 없음"); return; }
   dr = true; $("chip").classList.remove("hidden"); hideMenus();
 });
-document.querySelector(".model-button, .mode-pill")?.addEventListener("click", () => { hideMenus(); $("model-menu").classList.remove("hidden"); });
+(document.querySelector(".model-button, .mode-pill") || document.querySelector("mode-switcher")?.shadowRoot?.querySelector(".pill"))?.addEventListener("click", () => { hideMenus(); $("model-menu").classList.remove("hidden"); });
 document.querySelectorAll("#model-menu [role=menuitem]").forEach(el => el.addEventListener("click", () => {
   $("model-label").textContent = el.textContent; hideMenus();
 }));

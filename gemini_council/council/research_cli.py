@@ -26,7 +26,10 @@ _MODE_CANDIDATES_JS = r"""
 (words) => {
   const out = [];
   const cut = (s, n) => (s || "").toString().slice(0, n);
-  for (const el of document.querySelectorAll("body *")) {
+  const all = [];                                   // 열린 shadow DOM 안까지 훑는다
+  const walk = root => { for (const el of root.querySelectorAll("*")) { all.push(el); if (el.shadowRoot) walk(el.shadowRoot); } };
+  walk(document);
+  for (const el of all) {
     if (!(el.offsetWidth || el.offsetHeight)) continue;
     const own = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join("").trim();
     if (!own || own.length > 40 || !words.some(w => own.includes(w))) continue;
@@ -96,8 +99,26 @@ def research_probe(web: WebConfig, rc: ResearchConfig, run: bool, default_mode: 
         menu_names = "() => [...document.querySelectorAll('[role^=menuitem],[role=option]')]" \
                      ".filter(e => e.offsetWidth || e.offsetHeight).map(e => e.innerText.trim()).slice(0, 40)"
         # 모드 글자를 가진 요소의 구조 (선택 규칙을 정확히 맞추기 위함)
+        import time as _t
+        t0 = _t.monotonic()
+        model_btn = r.find_model_button(page, wait_s=15.0)                   # 늦게 그려지는지 확인
+        report["steps"]["model_found_after_s"] = round(_t.monotonic() - t0, 1) if model_btn else None
         report["steps"]["mode_candidates"] = page.evaluate(_MODE_CANDIDATES_JS, r.sel["mode_words"])
-        model_btn = r.find_model_button(page)
+        report["steps"]["text_hits"] = {w: page.get_by_text(w).count() for w in r.sel["mode_words"]}
+        report["steps"]["frames"] = [f.url[:80] for f in page.frames]
+        try:  # 입력창 주변의 접근성 구조 (버튼 역할·이름). 대화 목록이 섞이지 않게 입력창 조상 일부만.
+            box = r.web._first_visible(page, "input")
+            area = page.locator("body")
+            if box is not None:  # 실제로 있는 가장 높은 조상(최대 6단계)
+                for lv in range(6, 0, -1):
+                    cand = box.locator(f"xpath=ancestor::*[{lv}]")
+                    if cand.count() > 0 and cand.first.evaluate("e => e.tagName") not in ("BODY", "HTML"):
+                        area = cand.first
+                        break
+            report["steps"]["composer_aria"] = area.aria_snapshot(timeout=5000)[:6000]
+        except Exception as e:  # 진단 정보 수집 실패는 보고서에 남김
+            report["steps"]["composer_aria"] = f"수집 실패: {type(e).__name__}: {e}"
+        page.screenshot(path=str(folder / "0_start.png"))
         report["steps"]["model_button"] = model_btn.inner_text() if model_btn else None
         report["steps"]["model_button_rule_hit"] = r._visible(page, r.sel["model_button"]) is not None
         if model_btn:

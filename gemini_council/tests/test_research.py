@@ -215,3 +215,18 @@ def test_mode_selection_when_picker_is_not_a_button(tmp_path, cleanup):
     assert page.locator("#model-label").inner_text() == "Hydrogen Flash"
     r.select_mode(page, "사고")
     assert page.locator("#model-label").inner_text() == "Hydrogen Thinking"
+
+
+@needs_chrome
+@pytest.mark.parametrize("picker", ["shadow", "late"])
+def test_mode_selection_shadow_dom_or_late_render(tmp_path, cleanup, picker):
+    """모델 표시가 웹 컴포넌트(shadow DOM) 안에 있거나 입력창보다 늦게 그려져도 찾아서 바꾼다."""
+    r, _ = _runner(tmp_path)
+    cleanup.append(r)
+    r.ctx = r.web.connect()
+    page = r.ctx.new_page()
+    page.goto(PAGE + f"?picker={picker}")
+    r.select_mode(page, "일반")
+    assert page.locator("#model-label").inner_text() == "Hydrogen Flash"   # CSS 는 열린 shadow DOM 을 통과
+    r.select_mode(page, "사고")
+    assert page.locator("#model-label").inner_text() == "Hydrogen Thinking"

@@ -209,19 +209,35 @@ class ResearchRunner:
 
     # -------------------------------------------------------------- 단계
 
-    def find_model_button(self, page: Any) -> Any | None:
-        """모델 선택 요소. 규칙으로 못 찾으면 입력창 근처의 'Thinking'·'Flash' 같은 글자를 직접 찾는다
-        (글자를 클릭해도 이벤트가 감싼 버튼으로 전달된다). 새 채팅에서만 쓰므로 대화 본문과 섞이지 않는다."""
+    MODEL_WAIT_S = 10.0  # 모델 표시는 입력창보다 늦게 그려질 수 있음 (실제 진단: 입력창 직후엔 없음)
+
+    def _find_model_once(self, page: Any) -> Any | None:
         btn = self._visible(page, self.sel["model_button"])
         if btn is not None:
             return btn
-        for w in self.sel["mode_words"]:
+        words = re.compile("|".join(re.escape(w) for w in self.sel["mode_words"]))
+        for role in ("button", "combobox", "listbox", "menuitem"):   # 접근성 이름 (웹 컴포넌트 내부까지 닿음)
+            loc = page.get_by_role(role, name=words)
+            for i in range(loc.count() - 1, -1, -1):
+                if loc.nth(i).is_visible():
+                    return loc.nth(i)
+        for w in self.sel["mode_words"]:                              # 글자 (열린 shadow DOM 포함)
             loc = page.get_by_text(w)
             for i in range(loc.count() - 1, -1, -1):
                 el = loc.nth(i)
                 if el.is_visible() and len(el.inner_text()) <= 40:
                     return el
         return None
+
+    def find_model_button(self, page: Any, wait_s: float | None = None) -> Any | None:
+        """모델 선택 요소. 규칙 → 접근성 역할·이름 → 글자 순으로 찾고, 늦게 그려지는 경우를 위해 잠시 기다린다.
+        글자를 클릭해도 이벤트가 감싼 버튼으로 전달된다. 새 채팅에서만 쓰므로 대화 본문과 섞이지 않는다."""
+        deadline = self._clock() + (self.MODEL_WAIT_S if wait_s is None else wait_s)
+        while True:
+            found = self._find_model_once(page)
+            if found is not None or self._clock() >= deadline:
+                return found
+            self._sleep(0.5)
 
     def select_mode(self, page: Any, mode: str) -> None:
         wanted = self.sel["mode_texts"][mode]
@@ -237,7 +253,7 @@ class ResearchRunner:
             raise BackendError(f"모델 메뉴에서 '{mode}' 항목({', '.join(wanted)})을 찾을 수 없음 (--probe 로 메뉴 이름 확인)")
         item.click()
         page.wait_for_timeout(300)  # 메뉴가 닫히고 표시가 바뀔 시간
-        btn = self.find_model_button(page)
+        btn = self.find_model_button(page, wait_s=3.0)
         if btn is None or not any(w in btn.inner_text() for w in wanted):
             raise BackendError(f"모델을 '{mode}' 로 바꾸지 못함 (현재: {btn.inner_text() if btn else '?'})")
 
