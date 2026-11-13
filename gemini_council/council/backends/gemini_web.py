@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from ..chrome import DEFAULT_PORT, cdp_endpoint, default_profile_dir, launch_chrome
+from ..chrome import DEFAULT_PORT, ChromeError, cdp_endpoint, default_profile_dir, launch_chrome
 from ..roles import Role
 from .base import BackendError, ChatBackend, ResponseTimeout, UsageLimitReached, UserAbort
 
@@ -113,7 +113,7 @@ class GeminiWebBackend(ChatBackend):
     def _load_urls(self) -> dict[str, str]:
         f = self.cfg.tabs_file
         if f.exists():
-            data = json.loads(f.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8-sig"))  # 메모장으로 고친 파일의 BOM 허용
             return {k: v for k, v in data.items() if isinstance(v, str)}
         return {}
 
@@ -124,7 +124,10 @@ class GeminiWebBackend(ChatBackend):
         """Chrome 을 띄우거나(이미 떠 있으면 재사용) CDP 로 붙는다. 브라우저 컨텍스트를 돌려준다."""
         from playwright.sync_api import sync_playwright  # 무거운 모듈이라 자동 모드에서만 불러온다
 
-        self.chrome_proc = launch_chrome(self.cfg.port, self.cfg.profile_dir, extra_args=self.cfg.extra_args)
+        try:
+            self.chrome_proc = launch_chrome(self.cfg.port, self.cfg.profile_dir, extra_args=self.cfg.extra_args)
+        except ChromeError as e:  # 토론·연구 모두 '백엔드 오류'로 저장하고 알아볼 수 있는 메시지로 끝내기 위함
+            raise BackendError(str(e)) from e
         self._pw = sync_playwright().start()
         self._browser = self._pw.chromium.connect_over_cdp(cdp_endpoint(self.cfg.port))
         if not self._browser.contexts:

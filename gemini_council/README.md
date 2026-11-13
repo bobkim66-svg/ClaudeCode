@@ -12,6 +12,39 @@
 
 작동 원리(Gemini 를 어떻게 쓰는지, 그림 포함): [docs/PIPELINE.md](docs/PIPELINE.md)
 
+## Deep Research 대기열 (`gemini_research.exe`)
+
+주제 여러 개를 Gemini **Deep Research** 로 차례로 돌리고 보고서를 `research\날짜_시각_주제.md` 로 저장한다.
+토론 자동 모드와 같은 전용 Chrome 프로필을 쓰므로 로그인은 한 번이면 된다.
+
+1. `gemini_research.exe` 더블클릭 → 기본 모드(1: 일반, 2: 사고) → 주제 사이 간격(Enter = 12분 고정).
+2. 주제 목록 `research_topics.txt` (exe 폴더) 가 없으면 콘솔에서 한 줄씩 입력받아 만든다. 형식:
+   ```
+   사고 | IR·LiDAR 융합 지각 신뢰도 기반 로컬 플래너 전환 선행연구
+   일반 | 열화상 카메라 깊이 추정 방법 비교
+   ```
+   모드를 생략하면 기본 모드. **Pro 는 Deep Research 를 지원하지 않으므로 거부**한다. 메모장으로 고쳐도 된다.
+3. 주제마다: 새 채팅 → 모델 메뉴에서 모드 선택 → `+` → `도구 더보기` → `Deep Research` → 주제 전송
+   → 연구 계획이 나오면 **`연구 시작` 클릭** → 보고서가 완성될 때까지 대기(최대 180분, `--max-minutes`) → `.md` 저장.
+   기본으로 주제 뒤에 선행연구 대조표·출처 링크·'확인 필요' 표시 요구를 붙인다 (`--raw` 면 주제만).
+4. 진행 상황은 `research_queue.json`. 중간에 멈춰도 다시 실행하면 **안 끝난 주제부터** 이어 한다
+   (완료한 주제는 건너뛰고, 실패한 주제는 다시 시도).
+5. 멈추는 경우: CAPTCHA·로그아웃·Deep Research 한도 → 저장 후 종료(다음 실행에 이어 함).
+   계획이 5분 안에 안 나오거나 메뉴를 못 찾으면 그 주제만 실패로 기록하고 다음 주제로 간다.
+
+첫 사용 전 화면 구조 확인 (실제 Gemini 화면으로 검증되지 않았음):
+
+```powershell
+.\gemini_research.exe --probe
+```
+
+메시지를 보내지 않고 모델 메뉴·`+` 메뉴를 열어 실제 항목 이름을 `research\probe_시각\probe_report.json` 에 기록한다.
+끝까지 확인하려면 `--probe-run` (짧은 주제로 Deep Research 1회 실제 진행, 사용량 1회 차감).
+메뉴 이름이 다르면 `research_selectors.json` 으로 맞춘다 (exe 옆에 두면 재빌드 불필요).
+
+하지 않는 것: 자동화 흔적 숨기기, 무작위 지연·마우스 흉내 같은 사람 흉내, CAPTCHA 풀기. 간격은 고정값이다.
+학교 계정의 웹 Gemini 를 프로그램이 조작하는 것이므로 약관·계정 제한 위험은 사용자 판단이다.
+
 ## 자동 모드 (퇴근 후 실행용)
 
 exe 를 더블클릭 → `실행 방식` 에서 **2: 자동** 을 고른다. 프로그램이 전용 Chrome 을 띄워 Gemini 탭 4개를 직접 조작한다
@@ -193,6 +226,8 @@ python run_council.py --backend mock --topic "AUV 군집의 통신 두절 시 �
 | `council/chrome.py` | 전용 프로필 Chrome 실행 (디버깅 포트) |
 | `council/web_tools.py` | `--web-login`, `--web-probe` |
 | `tests/fake_gemini_page.html` | 가짜 Gemini 페이지 (스트리밍·중지 버튼·CAPTCHA·한도 재현) |
+| `council/research.py`, `research_cli.py` | Deep Research 대기열 (`gemini_research.exe`) |
+| `tests/fake_research_page.html` | 가짜 Deep Research 페이지 (모델 메뉴, 도구 메뉴, 연구 계획, '연구 시작') |
 | `council/clipboard.py` | OS 클립보드 (Windows: Win32 API 직접, Linux: xclip 등) |
 | `council/console.py` | 클립보드 감시 중 r/q 명령 입력 |
 | `council/backends/mock.py` | 시드 고정 가짜 응답기 (종료·한도·타임아웃·오류 재현) |

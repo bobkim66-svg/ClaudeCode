@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>가짜 Gemini Deep Research (테스트용)</title>
+<style>
+  body { font-family: sans-serif; background: #fff; color: #111; margin: 16px; }
+  model-response, user-query, .menu { display: block; margin: 8px 0; padding: 8px; border: 1px solid #ccc; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<!--
+  실제 화면(2026-11 사용자 캡처)의 흐름을 흉내 낸 테스트 페이지:
+    입력창 왼쪽 '+' → '도구 더보기' → 'Deep Research', 오른쪽 모델 버튼('Hydrogen Thinking ⌄')
+    → 질문 전송 → 연구 계획 + '연구 시작' 버튼 → 긴 보고서 생성(중지 버튼) → 완료 시 'Docs로 내보내기'
+  쿼리: mode=normal|captcha|limit|noplan|hang|logout, gen=보고서 조각 간격 ms(기본 40), plan=계획 지연 ms
+-->
+<div id="chat"></div>
+<div id="composer">
+  <button class="upload-button" aria-label="도구 및 파일 업로드">+</button>
+  <rich-textarea><div class="ql-editor" contenteditable="true" role="textbox" aria-label="Gemini에게 물어보기"></div></rich-textarea>
+  <span id="chip" class="hidden">Deep Research ×</span>
+  <button class="model-button" aria-label="모드 선택"><span id="model-label">Hydrogen Thinking</span> ⌄</button>
+  <button class="send-button" aria-label="메시지 보내기">보내기</button>
+  <button class="stop-button hidden" aria-label="대답 생성 중지">중지</button>
+</div>
+<div id="tools-menu" class="menu hidden" role="menu">
+  <div role="menuitem">파일 업로드</div>
+  <div role="menuitem">이미지 만들기</div>
+  <div role="menuitem" id="more">도구 더보기 ›</div>
+</div>
+<div id="more-menu" class="menu hidden" role="menu">
+  <div role="menuitem">Canvas</div>
+  <div role="menuitem" id="dr-item">Deep Research</div>
+</div>
+<div id="model-menu" class="menu hidden" role="menu">
+  <div role="menuitem">Hydrogen Flash</div>
+  <div role="menuitem">Hydrogen Thinking</div>
+  <div role="menuitem">Pro</div>
+</div>
+<script>
+const q = new URLSearchParams(location.search);
+const mode = q.get("mode") || "normal";
+const gen = parseInt(q.get("gen") || "40", 10);
+const planDelay = parseInt(q.get("plan") || "300", 10);
+const $ = id => document.getElementById(id);
+let dr = false;
+
+if (mode === "logout") { $("composer").remove(); }
+if (mode === "captcha") {
+  $("composer").remove();
+  document.body.insertAdjacentHTML("beforeend", "<p>비정상적인 트래픽이 감지되었습니다.</p><iframe title='reCAPTCHA' src='about:blank'></iframe>");
+}
+const input = document.querySelector(".ql-editor");
+const send = document.querySelector(".send-button");
+const stop = document.querySelector(".stop-button");
+const hideMenus = () => ["tools-menu", "more-menu", "model-menu"].forEach(i => $(i).classList.add("hidden"));
+
+document.querySelector(".upload-button")?.addEventListener("click", () => { hideMenus(); $("tools-menu").classList.remove("hidden"); });
+$("more").addEventListener("click", () => $("more-menu").classList.remove("hidden"));
+$("dr-item").addEventListener("click", () => {
+  if ($("model-label").textContent === "Pro") { alert("Pro 에서는 Deep Research 를 쓸 수 없음"); return; }
+  dr = true; $("chip").classList.remove("hidden"); hideMenus();
+});
+document.querySelector(".model-button")?.addEventListener("click", () => { hideMenus(); $("model-menu").classList.remove("hidden"); });
+document.querySelectorAll("#model-menu [role=menuitem]").forEach(el => el.addEventListener("click", () => {
+  $("model-label").textContent = el.textContent; hideMenus();
+}));
+
+function addResponse() {
+  const mr = document.createElement("model-response");
+  mr.innerHTML = "<message-content><div class='markdown'></div></message-content>";
+  $("chat").appendChild(mr);
+  return mr;
+}
+
+function submit() {
+  const prompt = input.innerText;
+  if (!prompt.trim()) return;
+  input.innerText = "";
+  if (!location.hash) location.hash = "r" + Math.random().toString(36).slice(2, 10);
+  const uq = document.createElement("user-query");
+  uq.textContent = `[${$("model-label").textContent}${dr ? " + Deep Research" : ""}] ${prompt}`;
+  $("chat").appendChild(uq);
+  const mr = addResponse();
+  const md = mr.querySelector(".markdown");
+  if (mode === "limit") { md.innerText = "Deep Research 사용 한도에 도달했습니다. 내일 다시 시도해 주세요."; return; }
+  if (!dr) { md.innerText = "일반 답변 (Deep Research 꺼짐)"; return; }
+  if (mode === "noplan") { md.innerText = "계획을 만들 수 없습니다."; return; }
+  setTimeout(() => {
+    md.innerText = "연구 계획:\n1. 선행연구 검색\n2. 비교표 작성";
+    const start = document.createElement("button");
+    start.textContent = "연구 시작";
+    mr.appendChild(start);
+    start.addEventListener("click", () => { start.remove(); runResearch(prompt); });
+  }, planDelay);
+}
+
+function runResearch(prompt) {
+  const mr = addResponse();
+  const panel = document.createElement("deep-research-immersive-panel");
+  panel.innerHTML = "<div class='report markdown'></div>";
+  $("chat").appendChild(panel);
+  const rep = panel.querySelector(".report");
+  mr.querySelector(".markdown").innerText = "조사를 진행하고 있습니다…";
+  send.classList.add("hidden"); stop.classList.remove("hidden");
+  const full = `# 보고서: ${prompt.slice(0, 40)}\n\n## 선행연구 대조표\n| 연구 | 방법 | 한계 |\n|---|---|---|\n` +
+               Array.from({length: 12}, (_, i) => `| 연구 ${i + 1} | 방법 ${i + 1} | 한계 ${i + 1} |`).join("\n") +
+               "\n\n## 결론\n가짜 보고서 끝 ✓";
+  if (mode === "hang") { rep.innerText = full.slice(0, 30); return; }
+  let i = 0;
+  const step = () => {
+    i = Math.min(full.length, i + 25);
+    rep.innerText = full.slice(0, i);
+    if (i < full.length) { setTimeout(step, gen); return; }
+    stop.classList.add("hidden"); send.classList.remove("hidden");
+    mr.querySelector(".markdown").innerText = "조사를 완료했습니다.";
+    const exp = document.createElement("button"); exp.textContent = "Docs로 내보내기"; panel.appendChild(exp);
+  };
+  setTimeout(step, gen);
+}
+send.addEventListener("click", submit);
+</script>
+</body>
+</html>

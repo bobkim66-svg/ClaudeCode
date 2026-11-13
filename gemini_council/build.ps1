@@ -39,6 +39,12 @@ Invoke-Checked "PyInstaller 빌드 (단일 exe)" {
         --collect-all playwright `
         --distpath dist --workpath build --specpath build run_council.py
 }
+Invoke-Checked "PyInstaller 빌드 (Deep Research 대기열 exe)" {
+    & $py -m PyInstaller --noconfirm --onefile --console --name gemini_research `
+        --collect-all playwright `
+        --distpath dist --workpath build --specpath build run_research.py
+}
+$researchExe = Join-Path $PSScriptRoot "dist\gemini_research.exe"
 $exe = Join-Path $PSScriptRoot "dist\gemini_council.exe"
 
 # ---- exe 단독 실행 점검: 소스 트리와 분리된 임시 폴더에서 실행 ----
@@ -74,6 +80,28 @@ try {
         $wtext = Get-Content $wmd[0].FullName -Raw -Encoding UTF8
         if ($wtext -notmatch "사회자 종료 선언" -or $wtext -notmatch "가짜 초록") { throw "자동 모드 회의록 내용 이상" }
         Write-Host "자동 모드 회의록 확인: $($wmd[0].FullName)" -ForegroundColor Green
+    } finally {
+        Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
+            Where-Object { $_.CommandLine -like "*$webProfile*" } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+
+    # Deep Research 대기열 exe: 가짜 Deep Research 페이지로 주제 2개를 끝까지 (모드 선택, 도구 메뉴, '연구 시작')
+    Copy-Item $researchExe $clean
+    $cleanResearch = Join-Path $clean "gemini_research.exe"
+    $fakeResearch = ([System.Uri](Join-Path $PSScriptRoot "tests\fake_research_page.html")).AbsoluteUri
+    "# 시험`n일반 | 열화상 깊이 추정`n사고 | 레이더 내비게이션`n" | Out-File -FilePath (Join-Path $clean "research_topics.txt") -Encoding utf8
+    try {
+        Invoke-Checked "Deep Research exe 점검" {
+            & $cleanResearch --web-url $fakeResearch --chrome-arg=--headless=new --profile-dir $webProfile `
+                --port 9412 --interval 0 --stable-sec 1
+        }
+        $reports = Get-ChildItem -Path (Join-Path $clean "research") -Filter "*.md"
+        if ($reports.Count -ne 2) { throw "보고서가 2개가 아님: $($reports.Count)" }
+        foreach ($r in $reports) {
+            if ((Get-Content $r.FullName -Raw -Encoding UTF8) -notmatch "가짜 보고서 끝") { throw "보고서 내용 이상: $($r.Name)" }
+        }
+        Write-Host "Deep Research 보고서 확인: $($reports.Name -join ', ')" -ForegroundColor Green
     } finally {
         Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
             Where-Object { $_.CommandLine -like "*$webProfile*" } |
