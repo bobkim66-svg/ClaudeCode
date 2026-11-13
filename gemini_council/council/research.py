@@ -34,8 +34,14 @@ DEFAULT_RESEARCH_SELECTORS: dict[str, Any] = {
                      "button[aria-label*='tools']"],
     "more_tools_texts": ["도구 더보기", "More tools"],
     "deep_research_texts": ["Deep Research"],
-    "model_button": ["button[aria-label*='모드']", "button[aria-label*='mode']", "button[aria-label*='모델']",
-                     "button:has-text('Thinking')", "button:has-text('Flash')"],
+    # 실제 화면 진단(2026-11-13)에서 아래 button 규칙으로는 못 찾음 → button 이 아닌 요소일 가능성. 후보를 넓히고
+    # 그래도 없으면 mode_words 글자로 찾는다. 정확한 구조는 --probe 의 mode_candidates 로 확인.
+    "model_button": ["[data-test-id='bard-mode-menu-button']", "bard-mode-switcher button", "bard-mode-switcher",
+                     "button[aria-label*='모드']", "button[aria-label*='mode']", "button[aria-label*='모델']",
+                     "button:has-text('Thinking')", "button:has-text('Flash')",
+                     "[role='button']:has-text('Thinking')", "[role='button']:has-text('Flash')",
+                     "[aria-haspopup]:has-text('Thinking')", "[aria-haspopup]:has-text('Flash')"],
+    "mode_words": ["Thinking", "Flash", "사고", "빠른"],
     "mode_texts": {"일반": ["Flash", "빠른", "일반"], "사고": ["Thinking", "사고"]},
     "start_texts": ["연구 시작", "Start research"],
     "done_texts": ["Docs로 내보내기", "Export to Docs", "공유 및 내보내기"],
@@ -203,9 +209,23 @@ class ResearchRunner:
 
     # -------------------------------------------------------------- 단계
 
+    def find_model_button(self, page: Any) -> Any | None:
+        """모델 선택 요소. 규칙으로 못 찾으면 입력창 근처의 'Thinking'·'Flash' 같은 글자를 직접 찾는다
+        (글자를 클릭해도 이벤트가 감싼 버튼으로 전달된다). 새 채팅에서만 쓰므로 대화 본문과 섞이지 않는다."""
+        btn = self._visible(page, self.sel["model_button"])
+        if btn is not None:
+            return btn
+        for w in self.sel["mode_words"]:
+            loc = page.get_by_text(w)
+            for i in range(loc.count() - 1, -1, -1):
+                el = loc.nth(i)
+                if el.is_visible() and len(el.inner_text()) <= 40:
+                    return el
+        return None
+
     def select_mode(self, page: Any, mode: str) -> None:
         wanted = self.sel["mode_texts"][mode]
-        btn = self._visible(page, self.sel["model_button"])
+        btn = self.find_model_button(page)
         if btn is None:
             raise BackendError("모델 선택 버튼을 찾을 수 없음 (--probe 로 화면 구조 확인)")
         if any(w in btn.inner_text() for w in wanted):
@@ -216,7 +236,8 @@ class ResearchRunner:
             page.keyboard.press("Escape")
             raise BackendError(f"모델 메뉴에서 '{mode}' 항목({', '.join(wanted)})을 찾을 수 없음 (--probe 로 메뉴 이름 확인)")
         item.click()
-        btn = self._visible(page, self.sel["model_button"])
+        page.wait_for_timeout(300)  # 메뉴가 닫히고 표시가 바뀔 시간
+        btn = self.find_model_button(page)
         if btn is None or not any(w in btn.inner_text() for w in wanted):
             raise BackendError(f"모델을 '{mode}' 로 바꾸지 못함 (현재: {btn.inner_text() if btn else '?'})")
 

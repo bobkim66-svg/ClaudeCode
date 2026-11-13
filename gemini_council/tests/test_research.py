@@ -200,3 +200,18 @@ def test_chrome_launch_failure_is_clean_message(tmp_path, monkeypatch, capsys):
     rc = research_cli.run(["--topics", str(f), "--profile-dir", str(tmp_path / "profile"), "--port", "9599",
                            "--out-dir", str(tmp_path / "r")], None)
     assert rc == 1 and "시작할 수 없음" in capsys.readouterr().out
+
+
+@needs_chrome
+def test_mode_selection_when_picker_is_not_a_button(tmp_path, cleanup):
+    """실제 화면처럼 모델 선택이 버튼 규칙에 안 맞아도, 'Thinking'·'Flash' 글자로 찾아 바꾼다."""
+    r, _ = _runner(tmp_path)
+    cleanup.append(r)
+    r.ctx = r.web.connect()
+    page = r.ctx.new_page()
+    page.goto(PAGE + "?picker=div")
+    assert r._visible(page, r.sel["model_button"]) is None          # 규칙으로는 못 찾는 상황 재현
+    r.select_mode(page, "일반")
+    assert page.locator("#model-label").inner_text() == "Hydrogen Flash"
+    r.select_mode(page, "사고")
+    assert page.locator("#model-label").inner_text() == "Hydrogen Thinking"

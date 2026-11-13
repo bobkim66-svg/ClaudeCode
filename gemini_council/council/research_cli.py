@@ -22,6 +22,24 @@ TOPICS_HELP = """# Deep Research 주제 목록: 한 줄에 하나, '모드 | 주
 # 사고 | IR·LiDAR 융합 지각 신뢰도 기반 로컬 플래너 전환 선행연구
 # 일반 | 열화상 카메라 깊이 추정 방법 비교
 """
+_MODE_CANDIDATES_JS = r"""
+(words) => {
+  const out = [];
+  const cut = (s, n) => (s || "").toString().slice(0, n);
+  for (const el of document.querySelectorAll("body *")) {
+    if (!(el.offsetWidth || el.offsetHeight)) continue;
+    const own = [...el.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join("").trim();
+    if (!own || own.length > 40 || !words.some(w => own.includes(w))) continue;
+    const chain = []; let x = el;
+    for (let i = 0; i < 6 && x; i++, x = x.parentElement)
+      chain.push({tag: x.tagName.toLowerCase(), role: x.getAttribute("role"), aria: x.getAttribute("aria-label"),
+                  testid: x.getAttribute("data-test-id"), popup: x.getAttribute("aria-haspopup"), cls: cut(x.className, 80)});
+    out.push({text: own, chain});
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+"""
 PROBE_TOPIC = "'OK' 라는 영어 단어의 어원을 출처와 함께 3문장으로 조사"
 
 
@@ -77,8 +95,11 @@ def research_probe(web: WebConfig, rc: ResearchConfig, run: bool, default_mode: 
         page.bring_to_front()
         menu_names = "() => [...document.querySelectorAll('[role^=menuitem],[role=option]')]" \
                      ".filter(e => e.offsetWidth || e.offsetHeight).map(e => e.innerText.trim()).slice(0, 40)"
-        model_btn = r._visible(page, r.sel["model_button"])
+        # 모드 글자를 가진 요소의 구조 (선택 규칙을 정확히 맞추기 위함)
+        report["steps"]["mode_candidates"] = page.evaluate(_MODE_CANDIDATES_JS, r.sel["mode_words"])
+        model_btn = r.find_model_button(page)
         report["steps"]["model_button"] = model_btn.inner_text() if model_btn else None
+        report["steps"]["model_button_rule_hit"] = r._visible(page, r.sel["model_button"]) is not None
         if model_btn:
             model_btn.click()
             page.wait_for_timeout(800)
