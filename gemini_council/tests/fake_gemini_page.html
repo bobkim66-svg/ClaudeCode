@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>가짜 Gemini (테스트용)</title>
+<style>
+  body { font-family: sans-serif; background: #fff; color: #111; margin: 16px; }
+  model-response, user-query { display: block; margin: 8px 0; padding: 8px; border: 1px solid #ccc; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<!--
+  실제 Gemini 웹 화면의 동작을 흉내 낸 테스트 페이지 (로그인 없이 웹 백엔드를 시험하기 위함).
+  URL 쿼리로 동작 선택:
+    mode=normal | captcha | limit | logout | hang | flicker
+    delay=스트리밍 조각 간격 [ms] (기본 30)
+    end=N  : 사회자 N번째 답변에 종료 토큰
+  요소 구조는 council/web_selectors 의 기본 후보와 맞춘다 (실제 Gemini 구조는 --web-probe 로 확인).
+-->
+<div id="chat"></div>
+<div id="composer">
+  <rich-textarea><div class="ql-editor" contenteditable="true" role="textbox" aria-label="Gemini에게 물어보기"></div></rich-textarea>
+  <button class="send-button" aria-label="메시지 보내기">보내기</button>
+  <button class="stop-button hidden" aria-label="대답 생성 중지">중지</button>
+</div>
+<script>
+const q = new URLSearchParams(location.search);
+const mode = q.get("mode") || "normal";
+const delay = parseInt(q.get("delay") || "30", 10);
+const endAt = parseInt(q.get("end") || "0", 10);
+let modCount = 0, n = 0;
+
+if (mode === "logout") {
+  document.getElementById("composer").remove();
+  document.body.insertAdjacentHTML("beforeend", "<a href='#'>로그인</a>");
+}
+if (mode === "captcha") {
+  document.getElementById("composer").remove();
+  document.body.insertAdjacentHTML("beforeend",
+    "<p>컴퓨터 네트워크에서 비정상적인 트래픽이 감지되었습니다.</p><iframe title='reCAPTCHA' src='about:blank'></iframe>");
+}
+
+const input = document.querySelector(".ql-editor");
+const send = document.querySelector(".send-button");
+const stop = document.querySelector(".stop-button");
+
+function answerFor(prompt) {
+  n += 1;
+  if (mode === "limit") return "Pro 모델 사용량 한도에 도달했습니다. 나중에 다시 시도해 주세요.";
+  if (prompt.includes("초록 작성")) return "**배경·주제:** 가짜 초록\n**합의된 결론:** 가짜 결론";
+  const isMod = prompt.includes("사회자의 차례");
+  let text = `(1) 입장: 동의\n(2) 근거: 가짜 응답 #${n} 한글 ✓ ${"근거 문장 ".repeat(20)}\n(3) 제안: 다음 단계`;
+  if (isMod) {
+    modCount += 1;
+    text = `(1) 라운드 요약: 요약 #${modCount}\n(2) 남은 쟁점: 없음\n(3) 다음 질문: 없음`;
+    if (endAt && modCount >= endAt) text += "\n\n[DISCUSSION_COMPLETE]";
+  }
+  return text;
+}
+
+function submit() {
+  const prompt = input.innerText;
+  if (!prompt.trim()) return;
+  input.innerText = "";
+  if (!location.hash) location.hash = "c" + Math.random().toString(36).slice(2, 10);  // 새 채팅 → 채팅 주소 생성
+  const uq = document.createElement("user-query"); uq.textContent = prompt;
+  document.getElementById("chat").appendChild(uq);
+  const mr = document.createElement("model-response");
+  mr.innerHTML = "<message-content><div class='markdown'></div></message-content>";
+  document.getElementById("chat").appendChild(mr);
+  const md = mr.querySelector(".markdown");
+  const full = answerFor(prompt);
+  send.classList.add("hidden"); stop.classList.remove("hidden");
+  if (mode === "hang") { md.textContent = full.slice(0, 5); return; }
+  let i = 0;
+  const step = () => {
+    i = Math.min(full.length, i + 7);
+    md.innerText = full.slice(0, i);
+    // flicker: 스트리밍 중간에 중지 버튼이 잠깐 사라졌다 다시 나타남 (완료 오탐 유도)
+    if (mode === "flicker" && i > full.length / 3 && i < full.length / 3 + 8) {
+      stop.classList.add("hidden"); setTimeout(() => stop.classList.remove("hidden"), delay * 3);
+    }
+    if (i < full.length) { setTimeout(step, delay); }
+    else { stop.classList.add("hidden"); send.classList.remove("hidden"); }
+  };
+  setTimeout(step, delay);
+}
+send.addEventListener("click", submit);
+input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
+</script>
+</body>
+</html>

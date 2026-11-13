@@ -36,6 +36,7 @@ if (-not $SkipTests) {
 
 Invoke-Checked "PyInstaller 빌드 (단일 exe)" {
     & $py -m PyInstaller --noconfirm --clean --onefile --console --name gemini_council `
+        --collect-all playwright `
         --distpath dist --workpath build --specpath build run_council.py
 }
 $exe = Join-Path $PSScriptRoot "dist\gemini_council.exe"
@@ -59,6 +60,25 @@ try {
     Write-Host "회의록 확인: $($md[0].FullName)" -ForegroundColor Green
     # 반자동 모드의 핵심인 Windows 클립보드(ctypes)가 exe 안에서도 동작하는지
     Invoke-Checked "exe 클립보드 점검" { & $cleanExe --clipboard-test }
+
+    # 자동(web) 모드: exe 에 묶인 Playwright 로 실제 Chrome(헤드리스)을 띄워 가짜 Gemini 페이지와 끝까지 토론
+    $fakePage = ([System.Uri](Join-Path $PSScriptRoot "tests\fake_gemini_page.html")).AbsoluteUri
+    $webProfile = Join-Path $clean "web_profile"
+    New-Item -ItemType Directory -Path $webProfile | Out-Null   # 로그인 단계 건너뛰기 (가짜 페이지)
+    try {
+        Invoke-Checked "exe 자동(web) 모드 점검" {
+            & $cleanExe --backend web --web-url "$fakePage`?end=1" --chrome-arg=--headless=new `
+                --profile-dir $webProfile --port 9411 --topic "exe 웹 점검" --rounds 2 --interval 0 --log-dir "웹 로그"
+        }
+        $wmd = Get-ChildItem -Path (Join-Path $clean "웹 로그") -Filter "discussion_*.md"
+        $wtext = Get-Content $wmd[0].FullName -Raw -Encoding UTF8
+        if ($wtext -notmatch "사회자 종료 선언" -or $wtext -notmatch "가짜 초록") { throw "자동 모드 회의록 내용 이상" }
+        Write-Host "자동 모드 회의록 확인: $($wmd[0].FullName)" -ForegroundColor Green
+    } finally {
+        Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
+            Where-Object { $_.CommandLine -like "*$webProfile*" } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
 
     # Gemini CLI 가 설치되어 있으면 실제 연결 확인 (로그인 안 됐으면 exit 1 이 정상)
     if (Get-Command gemini.cmd -ErrorAction SilentlyContinue) {

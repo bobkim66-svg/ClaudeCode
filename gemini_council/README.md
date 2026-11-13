@@ -12,6 +12,34 @@
 
 작동 원리(Gemini 를 어떻게 쓰는지, 그림 포함): [docs/PIPELINE.md](docs/PIPELINE.md)
 
+## 자동 모드 (퇴근 후 실행용)
+
+exe 를 더블클릭 → `실행 방식` 에서 **2: 자동** 을 고른다. 프로그램이 전용 Chrome 을 띄워 Gemini 탭 4개를 직접 조작한다
+(마우스 매크로가 아니라 페이지 구조를 읽고 쓰므로 팝업·스크롤에 덜 민감하고, 클립보드를 쓰지 않는다).
+
+1. **최초 1회:** 전용 Chrome 창이 뜨면 경북대 계정으로 로그인 → 콘솔에서 Enter. (평소 Chrome 과 별개 프로필)
+2. **첫 실행:** 새 채팅 4개를 만들고 주소를 exe 폴더의 `tabs.json` 에 저장한다. 다음부터는 같은 4개를 재사용한다.
+   새 채팅으로 바꾸려면 `--new-chats` (기존 `tabs.json` 은 백업).
+3. **간격:** 메시지 사이 **16분 고정** (`--interval` 로 변경). 3라운드 = 12차례 + 초록 → 약 3시간 반.
+4. **멈추는 경우:** CAPTCHA·비정상 트래픽 화면, 로그아웃, 사용량 한도, 답변 10분 초과(`--answer-timeout`)
+   → 즉시 저장하고 멈춘다. 다음에 exe 를 실행하면 이어서 할지 묻는다.
+5. PC 는 켜 두고 **절전을 끈다**. Chrome 창·탭은 닫지 않는다 (최소화는 가능할 것으로 보이나 실기 확인 필요).
+
+하지 않는 것: 자동화 흔적 숨기기, 무작위 지연 등 사람 흉내, CAPTCHA 풀기, 모델 자동 변경
+(비평가 탭의 Pro 선택은 직접 해 둔다). 학교 계정의 웹 Gemini 를 프로그램이 조작하는 것이므로
+약관·계정 제한 위험은 사용자 판단이다.
+
+### 첫 사용 전 화면 구조 확인 (필수)
+
+Gemini 의 실제 화면 구조는 개발 환경에서 확인할 수 없었다. 처음 한 번 아래를 실행해 결과를 확인한다.
+
+```powershell
+.\gemini_council.exe --web-probe
+```
+
+새 채팅에 시험 메시지 1개를 보내고 `logs\probe_시각\` 에 보고서(probe_report.json)와 화면 캡처를 남긴다.
+"진단 성공" 이 아니면 그 폴더를 보내면 `web_selectors.json` 을 맞춰 준다 (exe 옆에 두면 재빌드 없이 적용).
+
 ## 반자동 모드 사용법 (Windows 11)
 
 1. `gemini_council.exe` 를 받는다: GitHub **Actions → gemini-council → 최근 성공 실행 → Artifacts → gemini-council-windows-exe**
@@ -158,6 +186,10 @@ python run_council.py --backend mock --topic "AUV 군집의 통신 두절 시 �
 | `council/protocol.py` | 순수 로직: 델타 버퍼, 턴 프롬프트 조립, 종료 토큰 판정 |
 | `council/backends/base.py` | 백엔드 인터페이스 (`stateful` 여부, `send()`, 한도/타임아웃 예외) |
 | `council/backends/manual.py` | 반자동 중계: 클립보드에 프롬프트 복사, 답변 복사 감지, 오복사 경고 |
+| `council/backends/gemini_web.py` | 자동: Playwright 로 Gemini 탭 제어, 완료 감지, CAPTCHA·한도 감지 |
+| `council/chrome.py` | 전용 프로필 Chrome 실행 (디버깅 포트) |
+| `council/web_tools.py` | `--web-login`, `--web-probe` |
+| `tests/fake_gemini_page.html` | 가짜 Gemini 페이지 (스트리밍·중지 버튼·CAPTCHA·한도 재현) |
 | `council/clipboard.py` | OS 클립보드 (Windows: Win32 API 직접, Linux: xclip 등) |
 | `council/console.py` | 클립보드 감시 중 r/q 명령 입력 |
 | `council/backends/mock.py` | 시드 고정 가짜 응답기 (종료·한도·타임아웃·오류 재현) |

@@ -11,6 +11,8 @@ flowchart LR
     O --> P["프로토콜<br/>protocol.py<br/>누구 차례·무엇을 보낼지"]
     P --> B{"백엔드<br/>backends/"}
     B -->|"manual (기본)"| W["Gemini 웹 탭 4개<br/>학교 계정 · 사람이 복사·붙여넣기"]
+    B -->|"web (자동)"| A["Gemini 웹 탭 4개<br/>학교 계정 · 프로그램이 Chrome 직접 제어"]
+    A --> O
     B -->|gemini-cli| C["Gemini CLI<br/>개인 계정 · 무인"]
     B -->|mock| K["가짜 응답<br/>오프라인 시험"]
     W --> O
@@ -135,6 +137,28 @@ sequenceDiagram
 - 명령: `r` + Enter = 보낼 메시지 다시 복사, `n` + Enter = 대기 건너뛰기, `q` + Enter = 저장 후 종료.
 - 한계: 기다리는 동안 다른 글을 복사하면 그 글이 답변으로 처리된다.
 
+## 5-2. 자동 모드 한 차례의 흐름
+
+```mermaid
+sequenceDiagram
+    participant 프로그램
+    participant Chrome as 전용 Chrome (CDP)
+    participant 탭 as Gemini 탭 N
+    Note over 프로그램: 직전 메시지 후 16분(고정)이 지날 때까지 대기
+    프로그램->>Chrome: 탭 N 을 앞으로
+    프로그램->>탭: 입력창에 메시지 입력 → 보내기
+    loop 0.5초마다
+        프로그램->>탭: 새 답변 있음? 중지 버튼 사라짐? 글자 2초간 그대로?
+        프로그램->>탭: CAPTCHA·로그아웃 화면?
+    end
+    탭-->>프로그램: 답변 글자를 화면에서 직접 읽음 (클립보드 안 씀)
+    프로그램->>프로그램: 한도 문구면 저장 후 중단, 아니면 자동 저장 → 다음 차례
+```
+
+- 요소 찾기 규칙(입력창, 보내기·중지 버튼, 답변)은 `web_selectors.json` 으로 덮어쓸 수 있다.
+  실제 Gemini 화면으로는 검증되지 않았으므로 첫 사용 전 `--web-probe` 로 확인한다.
+- 하지 않는 것: 자동화 흔적 숨기기, 무작위 지연 같은 사람 흉내, CAPTCHA 풀기, 모델 변경.
+
 ## 6. 탭 재활용과 이어 하기
 
 ```mermaid
@@ -176,6 +200,8 @@ flowchart LR
 | `council/roles.py` | 역할 정의, 공통·전용 규칙, 점검 항목(`AGENDAS`), seed 프롬프트 |
 | `council/protocol.py` | 차례별 메시지 조립(델타/요약), 종료 토큰 판정 |
 | `council/orchestrator.py` | 라운드 루프, 일시정지·중단, 모든 종료 경로에서 저장 |
+| `council/backends/gemini_web.py` | 자동: Chrome 의 Gemini 탭 직접 제어 |
+| `council/chrome.py` | 전용 프로필 Chrome 실행 |
 | `council/backends/manual.py` | 반자동: 클립보드 중계, 오복사 검사 |
 | `council/backends/gemini_cli.py` | 무인: Gemini CLI 헤드리스 호출 |
 | `council/clipboard.py` | OS 클립보드 (Windows Win32 API 직접) |

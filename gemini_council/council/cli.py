@@ -11,12 +11,14 @@ from typing import Callable
 
 from .backends import BackendError, ChatBackend, MockBackend
 from .backends.gemini_cli import GeminiCliBackend, GeminiCliConfig
+from .backends.gemini_web import GeminiWebBackend, WebConfig
 from .backends.manual import ManualConfig, ManualRelayBackend
 from .clipboard import system_clipboard
 from .console import ConsoleCommands
 from .config import CouncilConfig
 from .orchestrator import Orchestrator
 from .session import SessionError, find_unfinished, load_state
+from .web_tools import web_login, web_probe
 from .roles import AGENDAS, Role
 
 _GC = GeminiCliConfig()
@@ -31,11 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="중단된 토론 이어 하기: 회의록(.md) 또는 상태(.json) 경로")
     p.add_argument("--char-limit", type=int, default=CouncilConfig.char_limit, help="발언 권장 상한 [자]")
     p.add_argument("--log-dir", type=Path, default=Path("logs"), help="회의록 저장 폴더")
-    p.add_argument("--backend", choices=["manual", "gemini-cli", "mock"], default="manual",
-                   help="manual=반자동(웹 탭에 직접 복사·붙여넣기, 기본), gemini-cli=무인, mock=오프라인 시험")
+    p.add_argument("--backend", choices=["manual", "web", "gemini-cli", "mock"], default="manual",
+                   help="manual=반자동(복사·붙여넣기, 기본), web=자동(Chrome 의 Gemini 탭 직접 제어), "
+                        "gemini-cli=무인(개인 계정 CLI), mock=오프라인 시험")
     p.add_argument("--clipboard-test", action="store_true", help="클립보드 읽기/쓰기만 점검하고 종료")
-    p.add_argument("--interval", type=float, default=INTERACTIVE_DEFAULT_INTERVAL_MIN,
-                   help="반자동: 차례 사이 최소 간격 [분] (Gemini 에 메시지가 몰려 나가지 않게, 0 = 대기 없음)")
+    p.add_argument("--interval", type=float, default=None,
+                   help="차례 사이 최소 간격 [분, 고정값] (기본: 반자동 5, 자동 16, 0 = 대기 없음)")
     p.add_argument("--no-abstract", action="store_true", help="토론 종료 후 초록(전체 요약) 요청 생략")
     p.add_argument("--agenda", choices=sorted(AGENDAS), default="general",
                    help="general=자유 토론, topic-review=연구 주제 검토(새로운 점·실현 가능성·위험·대안 점검)")
@@ -48,6 +51,16 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--timeout", type=float, default=_GC.timeout_s, help="호출 1회 제한 시간 [s]")
     g.add_argument("--min-interval", type=float, default=_GC.min_interval_s, help="호출 간 최소 간격 [s]")
     g.add_argument("--check", action="store_true", help="로그인/모델 동작만 1회 호출로 확인하고 종료")
+
+    w = p.add_argument_group("web 백엔드 (자동 모드)")
+    w.add_argument("--web-login", action="store_true", help="전용 Chrome 프로필로 Gemini 로그인 (최초 1회)")
+    w.add_argument("--web-probe", action="store_true", help="새 채팅에 시험 메시지 1개를 보내 화면 구조 진단")
+    w.add_argument("--new-chats", action="store_true", help="저장된 채팅 4개 대신 새 채팅 4개로 시작 (tabs.json 백업)")
+    w.add_argument("--answer-timeout", type=float, default=10.0, help="답변 1개를 기다리는 최대 시간 [분]")
+    w.add_argument("--port", type=int, default=9222, help="Chrome 원격 디버깅 포트")
+    w.add_argument("--profile-dir", type=Path, default=None, help="전용 Chrome 프로필 폴더 (기본: 사용자 앱 데이터)")
+    w.add_argument("--web-url", default=None, help="(시험용) 새 채팅 주소 대신 열 주소")
+    w.add_argument("--chrome-arg", action="append", default=[], help="(시험용) Chrome 추가 옵션, 여러 번 지정 가능")
 
     m = p.add_argument_group("mock 백엔드")
     m.add_argument("--stateless", action="store_true", help="mock 을 stateless 모드로")
@@ -72,11 +85,30 @@ def _log(msg: str) -> None:
     print(f"{datetime.now():%H:%M:%S} {msg}", flush=True)
 
 
+DEFAULT_INTERVAL_MIN = {"manual": 5.0, "web": 16.0}
+
+
+def _interval_min(args: argparse.Namespace) -> float:
+    return args.interval if args.interval is not None else DEFAULT_INTERVAL_MIN.get(args.backend, 0.0)
+
+
+def web_config(args: argparse.Namespace) -> WebConfig:
+    cfg = WebConfig(port=args.port, turn_interval_s=_interval_min(args) * 60.0,
+                    response_timeout_s=args.answer_timeout * 60.0, extra_args=tuple(args.chrome_arg))
+    if args.profile_dir is not None:
+        cfg.profile_dir = args.profile_dir
+    if args.web_url:
+        cfg.new_chat_url = args.web_url
+    return cfg
+
+
 def make_backend(args: argparse.Namespace, cfg: CouncilConfig,
                  console: ConsoleCommands | None = None) -> ChatBackend:
     if args.backend == "manual":
         return ManualRelayBackend(commands=(console.poll if console else (lambda: None)),
-                                  cfg=ManualConfig(turn_interval_s=args.interval * 60.0))
+                                  cfg=ManualConfig(turn_interval_s=_interval_min(args) * 60.0))
+    if args.backend == "web":
+        return GeminiWebBackend(web_config(args), log=_log, commands=(console.poll if console else (lambda: None)))
     if args.backend == "mock":
         return MockBackend(stateful=not args.stateless, seed=args.seed,
                            end_at_round=args.mock_end_round, end_token=cfg.end_token)
@@ -112,13 +144,22 @@ def _force_utf8_output() -> None:
 
 
 INTERACTIVE_DEFAULT_ROUNDS = 3  # 반자동은 라운드당 복사·붙여넣기 4회 → 기본 3라운드(12회)
-INTERACTIVE_DEFAULT_INTERVAL_MIN = 5.0  # 차례 사이 최소 간격 [분] (학교망에서 Google 트래픽 확인 화면이 뜬 뒤 요청)
 
 
-def _ask_interval(read: Callable[[str], str]) -> float:
-    interval = INTERACTIVE_DEFAULT_INTERVAL_MIN
+def _ask_mode(read: Callable[[str], str]) -> str:
+    mode = ""
+    while mode not in ("1", "2"):
+        mode = read("실행 방식 — 1: 반자동(복사·붙여넣기), 2: 자동(Chrome 탭 직접 제어, 퇴근 후용) [Enter = 1]: ").strip() or "1"
+    if mode == "2":
+        print("  ※ 자동 모드는 학교 계정의 웹 Gemini 를 프로그램이 조작합니다 (약관·계정 제한 위험은 사용자 판단).")
+        print("    CAPTCHA·한도·로그아웃이 보이면 저장 후 멈추며, 다음에 exe 를 실행하면 이어 할 수 있습니다.")
+    return "web" if mode == "2" else "manual"
+
+
+def _ask_interval(read: Callable[[str], str], default: float) -> float:
+    interval = default
     while True:
-        raw = read(f"차례 사이 대기 시간(분) [Enter = {INTERACTIVE_DEFAULT_INTERVAL_MIN:g}]: ").strip()
+        raw = read(f"차례 사이 대기 시간(분, 고정) [Enter = {default:g}]: ").strip()
         if not raw:
             return interval
         try:
@@ -133,7 +174,7 @@ def _ask_interval(read: Callable[[str], str]) -> float:
 def ask_interactive(read: Callable[[str], str] = input, log_dir: Path = Path("logs")) -> list[str]:
     """exe 를 더블클릭(인자 없음)했을 때 질문으로 argv 를 만든다. 중단된 토론이 있으면 이어 할지 먼저 묻는다."""
     print("=" * 64)
-    print(" 멀티 AI 구조화 토론 (반자동 모드)")
+    print(" 멀티 AI 구조화 토론")
     print("=" * 64)
     pending = find_unfinished(log_dir)
     if pending is not None:
@@ -142,8 +183,10 @@ def ask_interactive(read: Callable[[str], str] = input, log_dir: Path = Path("lo
         print(f" 중단된 토론이 있습니다: \"{data['topic']}\"")
         print(f"   발언 {n}개 진행, 중단 사유: {data.get('stop_reason', '?')}, 파일: {pending.with_suffix('.md').name}")
         if read("이어서 할까요? (y = 이어 하기, Enter = 새 토론): ").strip().lower() in ("y", "yes", "ㅛ"):
-            interval = _ask_interval(read)
-            return ["--backend", "manual", "--resume", str(pending), "--interval", f"{interval:g}"]
+            backend = _ask_mode(read)
+            interval = _ask_interval(read, DEFAULT_INTERVAL_MIN[backend])
+            return ["--backend", backend, "--resume", str(pending), "--interval", f"{interval:g}"]
+    backend = _ask_mode(read)
     topic = ""
     while not topic:
         topic = read("토론 주제를 입력하세요: ").strip()
@@ -159,12 +202,12 @@ def ask_interactive(read: Callable[[str], str] = input, log_dir: Path = Path("lo
             rounds = int(raw)
             break
         print("  1 이상의 숫자를 입력하세요.")
-    interval = _ask_interval(read)
+    interval = _ask_interval(read, DEFAULT_INTERVAL_MIN[backend])
     turns = 4 * rounds
     total_min = interval * (turns - 1)
     print(f"  → 최대 {rounds}라운드 = {turns}차례, 대기만 최대 약 {total_min:g}분 (+ Gemini 답변 시간)")
     agenda = "topic-review" if kind == "2" else "general"
-    return ["--backend", "manual", "--topic", topic, "--rounds", str(rounds), "--agenda", agenda,
+    return ["--backend", backend, "--topic", topic, "--rounds", str(rounds), "--agenda", agenda,
             "--interval", f"{interval:g}"]
 
 
@@ -186,6 +229,10 @@ def run(argv: list[str], console: ConsoleCommands | None) -> int:
     args = parser.parse_args(argv)
     if args.clipboard_test:
         return clipboard_selftest()
+    if args.web_login:
+        return web_login(web_config(args))
+    if args.web_probe:
+        return web_probe(web_config(args), args.log_dir)
     resume = resume_json = None
     if args.resume is not None:
         try:
@@ -201,8 +248,19 @@ def run(argv: list[str], console: ConsoleCommands | None) -> int:
     else:
         cfg = CouncilConfig(max_rounds=args.rounds or CouncilConfig.max_rounds, char_limit=args.char_limit,
                             log_dir=args.log_dir, agenda=AGENDAS[args.agenda])
-    if args.backend == "manual" and console is None:
+    if args.backend in ("manual", "web") and console is None:
         console = ConsoleCommands()
+    if args.backend == "web":
+        wcfg = web_config(args)
+        if not wcfg.profile_dir.exists():  # 최초 실행: 먼저 로그인
+            print("자동 모드를 처음 실행합니다. 먼저 전용 Chrome 에서 로그인합니다.")
+            read = (lambda q: (print(q, end="", flush=True), console.wait_line())[1] or "") if console else input
+            if web_login(wcfg, read=read) != 0:
+                return 1
+        if args.new_chats and wcfg.tabs_file.exists():
+            backup = wcfg.tabs_file.with_name(f"tabs_{datetime.now():%Y%m%d_%H%M%S}.bak.json")
+            wcfg.tabs_file.rename(backup)
+            print(f"저장된 채팅 주소를 {backup.name} 로 백업하고 새 채팅 4개로 시작합니다.")
     backend = make_backend(args, cfg, console)
     if args.check:
         return run_check(backend)

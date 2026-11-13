@@ -199,10 +199,10 @@ def test_cli_resume_end_to_end(tmp_path, capsys):
 
 def test_interactive_offers_resume(tmp_path, capsys):
     _, md = _interrupted_run(tmp_path)
-    answers = iter(["y", ""])
+    answers = iter(["y", "", ""])                                     # 이어 하기 → 방식 Enter(반자동) → 간격 Enter
     argv = ask_interactive(read=lambda q: next(answers), log_dir=md.parent)
     assert argv == ["--backend", "manual", "--resume", str(md.with_suffix(".json")), "--interval", "5"]
     assert TOPIC in capsys.readouterr().out
-    answers = iter(["", "새 주제", "", "", ""])                       # Enter = 새 토론
+    answers = iter(["", "", "새 주제", "", "", ""])                   # Enter = 새 토론, 방식 Enter
     argv = ask_interactive(read=lambda q: next(answers), log_dir=md.parent)
     assert "--resume" not in argv and argv[argv.index("--topic") + 1] == "새 주제"
