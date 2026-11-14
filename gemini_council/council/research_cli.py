@@ -66,6 +66,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--plan-minutes", type=float, default=0.0,
                    help="'연구 시작' 버튼을 기다리는 최대 시간 [분] (0 = 제한 없음, 기본)")
     p.add_argument("--stable-sec", type=float, default=120.0, help="(시험용) 보고서가 그대로여야 하는 시간 [s]")
+    p.add_argument("--no-wait", action="store_true",
+                   help="한도에 걸리면 기다리지 않고 저장 후 종료 (기본: 다음 시도 시각까지 기다렸다 다시 시도)")
+    p.add_argument("--max-wait-hours", type=float, default=48.0, help="한도 대기 1회 최대 시간 [시간]")
     return p
 
 
@@ -82,7 +85,8 @@ def configs(args: argparse.Namespace) -> tuple[WebConfig, ResearchConfig]:
     rc = ResearchConfig(interval_s=args.interval * 60.0, research_timeout_s=args.max_minutes * 60.0,
                         stable_s=args.stable_sec, done_stable_s=min(15.0, args.stable_sec), out_dir=args.out_dir,
                         plan_timeout_s=args.plan_minutes * 60.0,
-                        template=not args.raw)
+                        template=not args.raw, wait_on_limit=not args.no_wait,
+                        max_wait_s=args.max_wait_hours * 3600.0)
     return web, rc
 
 
@@ -220,6 +224,9 @@ def run(argv: list[str], console: ConsoleCommands | None) -> int:
         hours = (len(todo) - 1) * args.interval / 60
         print(f"남은 주제 {len(todo)}개. 주제 사이 {args.interval:g}분 고정 간격 (간격만 약 {hours:.1f}시간 + 연구 시간). "
               "n + Enter: 대기 건너뛰기, q + Enter: 저장 후 종료")
+        print("한도에 걸리면 " + (f"다음 시도 시각까지 기다렸다 같은 주제를 다시 시도합니다 (1회 최대 {args.max_wait_hours:g}시간). "
+                                 "PC 절전 모드를 꺼 두세요." if not args.no_wait else "저장 후 종료합니다.")
+              + f" 시도 기록: {rc.quota_file}")
     runner = ResearchRunner(web, rc, log=_log, commands=(console.poll if console else (lambda: None)))
     try:
         counts = runner.run_queue(topics)
@@ -246,7 +253,9 @@ def main(argv: list[str] | None = None) -> int:
         while mode not in ("1", "2"):
             mode = input("모드를 안 적은 주제의 기본 모드 — 1: 일반, 2: 사고 [Enter = 2]: ").strip() or "2"
         raw = input("주제 사이 간격(분, 고정) [Enter = 12]: ").strip()
-        argv2 = ["--mode", "일반" if mode == "1" else "사고"] + (["--interval", raw] if raw else [])
+        wait = input("한도에 걸리면 — 1: 풀릴 때까지 기다렸다 이어서, 2: 저장 후 종료 [Enter = 1]: ").strip() or "1"
+        argv2 = (["--mode", "일반" if mode == "1" else "사고"] + (["--interval", raw] if raw else [])
+                 + (["--no-wait"] if wait == "2" else []))
         console = ConsoleCommands()
         return run(argv2, console)
     except BaseException:

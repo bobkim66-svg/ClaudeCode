@@ -5,7 +5,10 @@
   → 주제 입력·전송 → 연구 계획이 나오면 '연구 시작' 클릭 → 보고서 완성까지 대기 → 보고서 글자 저장
 
 하지 않는 것: 자동화 흔적 숨기기, 무작위 지연·마우스 흉내 등 사람 흉내, CAPTCHA 풀기.
-주제 사이 간격은 고정값이다. CAPTCHA·로그아웃·사용량 한도가 보이면 대기열을 저장하고 멈춘다.
+주제 사이 간격은 고정값이다. CAPTCHA·로그아웃이 보이면 대기열을 저장하고 멈춘다.
+사용량 한도가 보이면 주제를 '대기'로 남기고, 안내 문구의 날짜·마지막 '연구 시작' 시각으로 다음 시도 시각을
+계산해 그때까지 기다렸다 같은 주제를 다시 시도한다 (quota.py, 고정 간격만 사용). 모든 시도는
+research_quota_log.json 에 기록한다.
 """
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ from typing import Any, Callable
 
 from .backends.base import BackendError, UsageLimitReached, UserAbort
 from .backends.gemini_web import GeminiWebBackend, WebConfig
+from .quota import QuotaLog
 from .roles import Role
 from .session import write_atomic
 
@@ -53,7 +57,10 @@ DEFAULT_RESEARCH_SELECTORS: dict[str, Any] = {
     "done_texts": ["Docs로 내보내기", "Export to Docs", "공유 및 내보내기"],
     "report": ["deep-research-immersive-panel .markdown", "deep-research-immersive-panel", "immersive-panel",
                "[data-test-id*='immersive']"],
-    "limit_texts": ["한도에 도달", "사용 한도", "reached your limit", "limit reached"],
+    # 실제 문구 (2026-11-13): "일일 조사 요청 1개를 모두 사용하셨습니다. 새로운 연구 요청은 2026. 11. 13. 이후에
+    # 진행하실 수 있습니다." — '연구 시작'을 누른 뒤에 나왔다.
+    "limit_texts": ["한도에 도달", "사용 한도", "모두 사용하셨습니다", "일일 조사 요청", "이후에 진행하실 수",
+                    "reached your limit", "limit reached", "used all"],
 }
 
 LIT_TEMPLATE = """
@@ -146,6 +153,14 @@ class ResearchConfig:
     queue_file: Path = field(default_factory=lambda: Path("research_queue.json"))
     selectors_file: Path | None = field(default_factory=lambda: Path("research_selectors.json"))
     template: bool = True
+    quota_file: Path = field(default_factory=lambda: Path("research_quota_log.json"))
+    limit_msg_max_chars: int = 600     # 한도 안내로 볼 응답의 최대 길이 (보고서 본문 속 단어 오인 방지)
+    min_report_chars: int = 200        # 이보다 짧은 '완료' 보고서는 실패로 본다
+    wait_on_limit: bool = True         # 한도면 다음 시도 시각까지 기다렸다 다시 시도
+    max_wait_s: float = 48 * 3600.0    # 한 번에 기다릴 최대 시간. 넘으면 저장 후 종료
+    wait_note_s: float = 30 * 60.0     # 한도 대기 중 남은 시간 표시 간격
+    wait_poll_s: float = 5.0           # 한도 대기 중 시계·키 입력 확인 간격
+    max_limit_streak: int = 6          # 연속으로 한도에 걸린 횟수가 이만큼이면 종료 (무한 반복 방지)
 
 
 def load_research_selectors(override: Path | None) -> dict[str, Any]:
@@ -173,6 +188,8 @@ class ResearchRunner:
         self._sleep, self._clock, self._now = sleep, clock, now
         self.sel = load_research_selectors(cfg.selectors_file)
         self.ctx: Any = None
+        self.quota = QuotaLog.load(cfg.quota_file)
+        self.last_research_s = 0.0
         self.last_research_s = 0.0
 
     # -------------------------------------------------------------- 공통 도우미
@@ -212,6 +229,12 @@ class ResearchRunner:
     def _last_response_text(self, page: Any) -> str:
         resp = self.web._responses(page)
         return self.web._response_text(resp.last).strip() if resp.count() else ""
+
+    def _limit_message(self, text: str) -> str | None:
+        """짧은 응답에 한도 문구가 있으면 그 문구, 아니면 None."""
+        if text and len(text) <= self.cfg.limit_msg_max_chars and any(t in text for t in self.sel["limit_texts"]):
+            return text
+        return None
 
     def _report_text(self, page: Any) -> str:
         loc = self._visible(page, self.sel["report"])
@@ -298,9 +321,9 @@ class ResearchRunner:
         while True:
             self._check(page)
             if self.web._responses(page).count() > before:
-                text = self._last_response_text(page)
-                if text and any(t in text for t in self.sel["limit_texts"]) and len(text) < 300:
-                    raise UsageLimitReached(f"Deep Research 한도: {text[:200]}")
+                msg = self._limit_message(self._last_response_text(page))
+                if msg:
+                    raise UsageLimitReached(f"Deep Research 한도: {msg[:300]}")
                 start = self._visible_text(page, self.sel["start_texts"], exact=True)
                 if start is not None:
                     waited = self._clock() - t0
@@ -322,6 +345,10 @@ class ResearchRunner:
         last, since, last_note = "", self._clock(), t0
         while True:
             self._check(page)
+            msg = self._limit_message(self._last_response_text(page))
+            if msg:  # '연구 시작'을 누른 뒤에 한도 안내가 나오는 경우 (실제 2026-11-13)
+                self.last_research_s = self._clock() - t0
+                raise UsageLimitReached(f"Deep Research 한도: {msg[:300]}")
             text = self._report_text(page)
             generating = self.web._first_visible(page, "stop") is not None
             now = self._clock()
@@ -357,28 +384,34 @@ class ResearchRunner:
         send = self.web._first_visible(page, "send")
         (send.click() if send is not None and send.is_enabled() else box.press("Enter"))
         self.log(f"   주제 전송 ({topic.mode} + Deep Research). 연구 계획을 기다립니다…")
+        self.quota.add(self._now().astimezone(), "sent", topic.text)
         plan_s = self._wait_plan_and_start(page, before)
+        self.quota.add(self._now().astimezone(), "start_clicked", topic.text, plan_s=round(plan_s))
         report, complete = self._wait_report(page)
         finished = self._now()
+        error = "" if complete else f"시간 초과 ({self.cfg.research_timeout_s / 60:.0f}분)"
+        if complete and len(report) < self.cfg.min_report_chars:
+            complete, error = False, f"보고서가 너무 짧음 ({len(report)}자) — 화면 확인 필요"
         timing = {"plan_s": round(plan_s), "research_s": round(self.last_research_s),
                   "total_s": round((finished - started).total_seconds())}
         self.log(f"   소요: 계획 {_fmt_dur(timing['plan_s'])} / 연구 {_fmt_dur(timing['research_s'])} "
                  f"/ 전체 {_fmt_dur(timing['total_s'])}")
-        path = self._save_report(topic, report, complete, started, finished, page.url, timing)
+        path = self._save_report(topic, report, complete, started, finished, page.url, timing, error)
+        self.quota.add(finished.astimezone(), "done" if complete else "failed", topic.text,
+                       chars=len(report), **({"error": error} if error else {}))
         return {"status": "done" if complete else "failed", "file": str(path), "chat_url": page.url,
                 "started": started.isoformat(timespec="seconds"), "finished": finished.isoformat(timespec="seconds"),
-                "timing": timing,
-                "chars": len(report), "error": "" if complete else f"{self.cfg.research_timeout_s / 60:.0f}분 초과 (부분 저장)"}
+                "timing": timing, "chars": len(report), "error": error}
 
     def _save_report(self, topic: Topic, report: str, complete: bool, started: datetime, finished: datetime,
-                     url: str, timing: dict | None = None) -> Path:
+                     url: str, timing: dict | None = None, error: str = "") -> Path:
         self.cfg.out_dir.mkdir(parents=True, exist_ok=True)
         path = self.cfg.out_dir / f"{started:%Y%m%d_%H%M%S}_{slugify(topic.text)}.md"
         mins = (finished - started).total_seconds() / 60
         head = [f"# Deep Research: {topic.text}", "",
                 f"- 모드: {topic.mode} + Deep Research",
                 f"- 시작: {started:%Y-%m-%d %H:%M:%S} / 종료: {finished:%Y-%m-%d %H:%M:%S} ({mins:.0f}분)",
-                f"- 상태: {'완료' if complete else '시간 초과 — 생성 중이던 부분까지만 저장'}",
+                f"- 상태: {'완료' if complete else (error or '시간 초과') + ' — 화면에 있던 부분까지만 저장'}",
                 *([f"- 소요: 계획 생성 {_fmt_dur(timing['plan_s'])} / 연구 {_fmt_dur(timing['research_s'])} "
                    f"/ 전체 {_fmt_dur(timing['total_s'])}"] if timing else []),
                 f"- 채팅: {url}", "",
@@ -405,29 +438,101 @@ class ResearchRunner:
                 self.log(f"⏸ 다음 주제까지 {rem // 60}분 {rem % 60:02d}초 (n + Enter: 바로 진행, q + Enter: 종료)")
             self._sleep(min(self.cfg.poll_s, max(deadline - now, 0.0)))
 
+    def _wait_until(self, when: datetime, why: str) -> None:
+        """벽시계 기준으로 when 까지 기다린다 (PC 절전 뒤에도 남은 시간이 맞도록). q: 종료, n: 바로 시도."""
+        last_note = None
+        while True:
+            now = self._now().astimezone()
+            left = (when - now).total_seconds()
+            if left <= 0:
+                return
+            cmd = self.commands()
+            if cmd == "q":
+                raise UserAbort("사용자가 q 로 중단")
+            if cmd == "n":
+                self.log("   대기를 건너뛰고 바로 시도합니다.")
+                return
+            if last_note is None or self._clock() - last_note >= self.cfg.wait_note_s:
+                last_note = self._clock()
+                self.log(f"⏸ {why}: {when:%m-%d %H:%M} 까지 {_fmt_dur(left)} 남음 "
+                         f"(n + Enter: 바로 시도, q + Enter: 저장 후 종료)")
+            self._sleep(min(self.cfg.wait_poll_s, left))
+
+    def _limit_wait(self, topic: Topic, message: str) -> bool:
+        """한도 기록 → 다음 시도 시각 계산 → 기다림. 반환: 다시 시도하면 True, 종료해야 하면 False."""
+        now = self._now().astimezone()
+        when, reasons = self.quota.on_limit(now, topic.text, message)
+        self.log("   한도에 걸림. 다음 시도 시각 후보 (★ = 채택, 가장 늦은 것):")
+        for r in reasons:
+            self.log(f"     {r}")
+        wait = (when - now).total_seconds()
+        streak = int(self.quota.state.get("limit_streak", 0))
+        if streak >= self.cfg.max_limit_streak:
+            self.log(f"   연속 {streak}번 한도 → 규칙이 예상과 다릅니다. 저장 후 종료 (research_quota_log.json 확인).")
+            return False
+        if not self.cfg.wait_on_limit:
+            self.log(f"   기다리지 않는 설정 → 저장 후 종료. {when:%m-%d %H:%M} 이후 다시 실행하세요.")
+            return False
+        if wait > self.cfg.max_wait_s:
+            self.log(f"   필요한 대기 {_fmt_dur(wait)} 가 최대 대기 {_fmt_dur(self.cfg.max_wait_s)} 를 넘음 "
+                     f"→ 저장 후 종료. {when:%m-%d %H:%M} 이후 다시 실행하세요.")
+            return False
+        self._wait_until(when, "한도 대기")
+        return True
+
     def run_queue(self, topics: list[Topic]) -> dict[str, int]:
-        """남은 주제를 차례로 진행. 반환: {'done', 'failed', 'left'} 개수. 대기열 파일은 주제마다 갱신."""
+        """남은 주제를 차례로 진행. 반환: {'done', 'failed', 'left'} 개수. 대기열 파일은 주제마다 갱신.
+
+        한도: 주제를 '대기'로 남기고 다음 시도 시각까지 기다렸다 같은 주제를 다시 시도 (wait_on_limit).
+        CAPTCHA·로그아웃·q: 저장 후 종료.
+        """
         queue = load_queue(self.cfg.queue_file)
         todo = pending(topics, queue)
         self.log(f"Deep Research 대기열: 전체 {len(topics)}개, 남은 주제 {len(todo)}개")
         counts = {"done": 0, "failed": 0, "left": len(todo)}
         if not todo:
             return counts
+        nt = self.quota.next_try
+        if nt is not None and nt > self._now().astimezone():
+            if self.cfg.wait_on_limit and (nt - self._now().astimezone()).total_seconds() <= self.cfg.max_wait_s:
+                self.log(f"지난 실행에서 한도에 걸렸습니다. 예상 가능 시각 {nt:%m-%d %H:%M} 까지 기다립니다.")
+                try:
+                    self._wait_until(nt, "한도 대기")
+                except UserAbort as e:
+                    self.log(f"중단: {e}")
+                    return counts
+            else:
+                self.log(f"주의: 지난 실행의 한도 예상 해제 시각 {nt:%m-%d %H:%M} 전입니다. 그대로 시도합니다.")
         self.ctx = self.web.connect()
         try:
-            for k, topic in enumerate(todo):
-                if k > 0:
+            k = 0
+            after_wait = False
+            while k < len(todo):
+                topic = todo[k]
+                if k > 0 and not after_wait:
                     self._wait_interval()
+                after_wait = False
                 self.log(f"[{k + 1}/{len(todo)}] {topic.mode} | {topic.text}")
                 entry = queue.setdefault(topic.key, {"topic": topic.text, "mode": topic.mode})
                 try:
                     result = self.run_one(topic)
                 except BackendError as e:
-                    if isinstance(e, (UsageLimitReached, UserAbort)) or "CAPTCHA" in str(e) or "로그인" in str(e):
+                    stop = isinstance(e, (UsageLimitReached, UserAbort)) or "CAPTCHA" in str(e) or "로그인" in str(e)
+                    if stop:
                         entry.update(status="pending", error=f"{type(e).__name__}: {e}")
                         save_queue(self.cfg.queue_file, queue)
+                    if isinstance(e, UsageLimitReached):
+                        self.log(f"   {e}")
+                        try:
+                            if self._limit_wait(topic, str(e)):
+                                after_wait = True
+                                continue  # 같은 주제 다시 시도
+                        except UserAbort as e2:
+                            e = e2
+                    if stop:
                         self.log(f"중단: {e} → 남은 주제는 다음 실행에서 이어 합니다.")
                         return counts
+                    self.quota.add(self._now().astimezone(), "failed", topic.text, str(e))
                     result = {"status": "failed", "error": f"{type(e).__name__}: {e}"}
                 entry.update(result)
                 save_queue(self.cfg.queue_file, queue)
@@ -435,6 +540,7 @@ class ResearchRunner:
                 counts["left"] -= 1
                 note = f"저장: {result['file']}" if result.get("file") else result.get("error", "")
                 self.log(f"   → {('완료' if result['status'] == 'done' else '실패')}. {note}")
+                k += 1
         finally:
             self.web.close()
         return counts

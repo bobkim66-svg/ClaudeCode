@@ -14,7 +14,7 @@
   실제 화면(2026-11 사용자 캡처)의 흐름을 흉내 낸 테스트 페이지:
     입력창 왼쪽 '+' → '도구 더보기' → 'Deep Research', 오른쪽 모델 버튼('Hydrogen Thinking ⌄')
     → 질문 전송 → 연구 계획 + '연구 시작' 버튼 → 긴 보고서 생성(중지 버튼) → 완료 시 'Docs로 내보내기'
-  쿼리: mode=normal|captcha|limit|noplan|hang|logout, gen=보고서 조각 간격 ms(기본 40), plan=계획 지연 ms
+  쿼리: mode=normal|captcha|limit|limit_after_start|short|noplan|hang|logout, gen=보고서 조각 간격 ms(기본 40), plan=계획 지연 ms
 -->
 <div id="chat"></div>
 <div id="composer">
@@ -120,6 +120,12 @@ function runResearch(prompt) {
   $("chat").appendChild(panel);
   const rep = panel.querySelector(".report");
   mr.querySelector(".markdown").innerText = "조사를 진행하고 있습니다…";
+  if (mode === "limit_after_start") {  // 실제 2026-11-13 화면: '연구 시작' 뒤 안내, 보고서 없음
+    panel.remove();
+    mr.querySelector(".markdown").innerText = "일일 조사 요청 1개를 모두 사용하셨습니다. 새로운 연구 요청은 2026. 11. 13. 이후에 진행하실 수 있습니다.";
+    return;
+  }
+  if (mode === "short") { rep.innerText = "짧은 글"; mr.querySelector(".markdown").innerText = "끝"; return; }
   send.classList.add("hidden"); stop.classList.remove("hidden");
   const full = `# 보고서: ${prompt.slice(0, 40)}\n\n## 선행연구 대조표\n| 연구 | 방법 | 한계 |\n|---|---|---|\n` +
                Array.from({length: 12}, (_, i) => `| 연구 ${i + 1} | 방법 ${i + 1} | 한계 ${i + 1} |`).join("\n") +

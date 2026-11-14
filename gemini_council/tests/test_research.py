@@ -73,7 +73,9 @@ def _runner(tmp_path, query="", **kw):
                     selectors_file=None, new_chat_url=PAGE + (f"?{query}" if query else ""), poll_s=0.05,
                     page_load_timeout_s=5, extra_args=extra)
     base = dict(interval_s=0, plan_timeout_s=10, research_timeout_s=30, stable_s=1.0, done_stable_s=0.3,
-                poll_s=0.1, out_dir=tmp_path / "research", queue_file=tmp_path / "queue.json", selectors_file=None)
+                poll_s=0.1, out_dir=tmp_path / "research", queue_file=tmp_path / "queue.json", selectors_file=None,
+                quota_file=tmp_path / "quota.json", wait_poll_s=1800,
+                wait_on_limit=False)  # 한도 대기 테스트에서만 켠다 (기본 켜짐이면 실제로 1시간 잠듦)
     base.update(kw)
     logs = []
     r = ResearchRunner(web, ResearchConfig(**base), log=logs.append)
@@ -272,3 +274,152 @@ def test_timing_recorded_and_unlimited_plan_wait(tmp_path, cleanup):
     assert any("연구 계획까지" in m and "걸림" in m for m in logs)
     md = next((tmp_path / "research").glob("*.md")).read_text(encoding="utf-8")
     assert "- 소요: 계획 생성 " in md
+
+
+# ---------- 한도: 문구 인식·시도 기록·다음 시도 시각 ----------
+
+from datetime import date, datetime, timedelta, timezone  # noqa: E402
+
+from council.quota import QuotaLog, next_try_time, pacific_midnight, pacific_offset, parse_limit_date  # noqa: E402
+
+KST = timezone(timedelta(hours=9))
+REAL_MSG = "일일 조사 요청 1개를 모두 사용하셨습니다. 새로운 연구 요청은 2026. 11. 13. 이후에 진행하실 수 있습니다."
+
+
+def test_parse_limit_date_variants():
+    assert parse_limit_date(REAL_MSG) == date(2026, 11, 13)
+    assert parse_limit_date("요청은 2026.1.5 이후에") == date(2026, 1, 5)
+    assert parse_limit_date("한도에 도달했습니다") is None
+    assert parse_limit_date("2026. 13. 40. 이후") is None          # 잘못된 날짜는 None
+
+
+def test_pacific_dst_boundaries():
+    utc = timezone.utc
+    assert pacific_offset(datetime(2026, 3, 8, 9, 59, tzinfo=utc)) == timedelta(hours=-8)
+    assert pacific_offset(datetime(2026, 3, 8, 10, 0, tzinfo=utc)) == timedelta(hours=-7)
+    assert pacific_offset(datetime(2026, 11, 1, 8, 59, tzinfo=utc)) == timedelta(hours=-7)
+    assert pacific_offset(datetime(2026, 11, 1, 9, 0, tzinfo=utc)) == timedelta(hours=-8)
+    assert pacific_midnight(date(2026, 11, 13)).astimezone(KST) == datetime(2026, 11, 13, 17, 0, tzinfo=KST)
+    assert pacific_midnight(date(2026, 7, 1)).astimezone(KST) == datetime(2026, 7, 1, 16, 0, tzinfo=KST)
+
+
+def test_next_try_takes_latest_candidate_and_backoff_grows():
+    now = datetime(2026, 11, 13, 12, 57, tzinfo=KST)
+    when, reasons = next_try_time(now, REAL_MSG, last_start=now, attempt=0)
+    assert when == datetime(2026, 11, 14, 13, 27, tzinfo=KST)         # 시작 + 24시간 + 30분 (롤링 가설)
+    assert sum(r.startswith("★") for r in reasons) == 1
+    # 날짜가 더 늦으면 날짜(PT 자정) 쪽
+    when2, _ = next_try_time(now, REAL_MSG.replace("11. 13.", "11. 16."), last_start=now, attempt=0)
+    assert when2 == datetime(2026, 11, 16, 17, 30, tzinfo=KST)
+    # 근거가 없으면 최소 간격 1 → 3 → 6 → 12 → 12 시간
+    steps = [(next_try_time(now, "한도", None, a)[0] - now) / timedelta(hours=1) for a in range(5)]
+    assert steps == [1, 3, 6, 12, 12]
+    assert next_try_time(now, "주간 한도에 도달", None, 0)[0] == now + timedelta(hours=24)
+
+
+def test_quota_log_state_and_reload(tmp_path):
+    f = tmp_path / "q.json"
+    log = QuotaLog.load(f)
+    t0 = datetime(2026, 11, 13, 12, 50, tzinfo=KST)
+    log.add(t0 - timedelta(days=1), "start_clicked", "어제")
+    log.add(t0 - timedelta(hours=20), "done", "어제")                    # 실제 진행된 연구 → 24시간 기준
+    log.add(t0, "start_clicked", "A")
+    when, _ = log.on_limit(t0 + timedelta(minutes=7), "A", REAL_MSG)   # 한도로 끝난 클릭은 기준에서 뺌
+    log2 = QuotaLog.load(f)                                            # 재시작 후에도 유지
+    assert log2.last_start == t0 - timedelta(days=1) and "pending_start" not in log2.state
+    # max(지금+1h=13:57, 어제 시작+24h+30분=13:20, 안내 날짜 PT 자정+30분=17:30) → 17:30 KST
+    assert log2.next_try == when == datetime(2026, 11, 13, 17, 30, tzinfo=KST)
+    assert log2.state["limit_streak"] == 1
+    assert [e["event"] for e in log2.events][-2:] == ["start_clicked", "limit"] and "모두 사용" in log2.events[-1]["message"]
+    log2.add(t0 + timedelta(days=1), "start_clicked", "A")
+    log2.add(t0 + timedelta(days=1, hours=1), "done", "A")
+    assert log2.state["limit_streak"] == 0 and log2.next_try is None and log2.last_start == t0 + timedelta(days=1)
+
+
+class _FakeTime:
+    """sleep 하면 벽시계(now)가 그만큼 흐르는 가짜 시간. on_sleep 으로 대기 중 상황을 바꿀 수 있다."""
+
+    def __init__(self, start, on_sleep=None):
+        self.t, self.slept, self.on_sleep = start, 0.0, on_sleep
+
+    def now(self):
+        return self.t
+
+    def sleep(self, s):
+        import time
+        self.slept += s
+        self.t += timedelta(seconds=s)
+        time.sleep(min(s, 0.01))
+        if self.on_sleep:
+            self.on_sleep(self)
+
+
+@needs_chrome
+def test_limit_after_start_is_not_saved_as_done_and_no_wait_stops(tmp_path, cleanup):
+    """실제 버그: '연구 시작' 뒤 나온 한도 안내가 '완료' 보고서로 저장됐다."""
+    r, logs = _runner(tmp_path, "mode=limit_after_start")
+    cleanup.append(r)
+    topics = [Topic("사고", "A"), Topic("사고", "B")]
+    assert r.run_queue(topics) == {"done": 0, "failed": 0, "left": 2}
+    q = load_queue(tmp_path / "queue.json")
+    assert q[topics[0].key]["status"] == "pending" and "모두 사용" in q[topics[0].key]["error"]
+    assert not list((tmp_path / "research").glob("*.md"))              # 보고서로 저장하지 않음
+    log = json.loads((tmp_path / "quota.json").read_text(encoding="utf-8"))
+    assert [e["event"] for e in log["events"]] == ["sent", "start_clicked", "limit"]
+    assert log["state"]["next_try"] and any("★" in m for m in logs)
+
+
+@needs_chrome
+def test_limit_waits_then_retries_same_topic(tmp_path, cleanup):
+    r, logs = _runner(tmp_path, "mode=limit_after_start", wait_on_limit=True, max_wait_s=48 * 3600)
+    cleanup.append(r)
+
+    def lift(ft):  # 기다리는 동안 한도가 풀림 → 정상 페이지
+        r.web.cfg.new_chat_url = PAGE
+    ft = _FakeTime(datetime(2026, 11, 13, 12, 50, tzinfo=KST), on_sleep=lift)
+    r._now, r._sleep = ft.now, ft.sleep
+    topics = [Topic("사고", "A")]
+    assert r.run_queue(topics) == {"done": 1, "failed": 0, "left": 0}
+    # 한도 클릭은 기준에서 빠지므로 안내 날짜(11/13 PT 자정 = 17:00 KST) + 30분 = 17:30 까지 ≈ 4시간 40분
+    assert 4.5 * 3600 < ft.slept < 4.8 * 3600
+    events = [e["event"] for e in json.loads((tmp_path / "quota.json").read_text(encoding="utf-8"))["events"]]
+    assert events == ["sent", "start_clicked", "limit", "sent", "start_clicked", "done"]
+    assert any("한도 대기" in m for m in logs)
+
+
+@needs_chrome
+def test_limit_wait_longer_than_max_stops(tmp_path, cleanup):
+    r, logs = _runner(tmp_path, "mode=limit_after_start", wait_on_limit=True, max_wait_s=3600)
+    cleanup.append(r)
+    ft = _FakeTime(datetime(2026, 11, 13, 12, 50, tzinfo=KST))
+    r._now, r._sleep = ft.now, ft.sleep
+    assert r.run_queue([Topic("사고", "A")]) == {"done": 0, "failed": 0, "left": 1}
+    assert ft.slept < 60 and any("최대 대기" in m for m in logs)
+
+
+def test_startup_waits_for_saved_next_try(tmp_path):
+    """지난 실행에서 저장한 next_try 가 미래면 Chrome 에 연결하기 전에 기다린다 (q 로 중단 가능)."""
+    from council.backends.gemini_web import WebConfig
+    from council.research import ResearchRunner
+    log = QuotaLog.load(tmp_path / "quota.json")
+    t0 = datetime(2026, 11, 13, 12, 50, tzinfo=KST)
+    log.state["next_try"] = (t0 + timedelta(hours=2)).isoformat()
+    log.save()
+    cmds = iter([None, None, "q"])
+    ft = _FakeTime(t0)
+    logs = []
+    r = ResearchRunner(WebConfig(tabs_file=tmp_path / "t.json", selectors_file=None),
+                       ResearchConfig(queue_file=tmp_path / "queue.json", quota_file=tmp_path / "quota.json",
+                                      selectors_file=None, out_dir=tmp_path / "r", wait_poll_s=600),
+                       log=logs.append, commands=lambda: next(cmds, None), sleep=ft.sleep, now=ft.now)
+    assert r.run_queue([Topic("사고", "A")]) == {"done": 0, "failed": 0, "left": 1}
+    assert any("기다립니다" in m for m in logs) and r.ctx is None       # 연결 전에 멈춤
+
+
+@needs_chrome
+def test_too_short_report_is_failed_not_done(tmp_path, cleanup):
+    r, _ = _runner(tmp_path, "mode=short")
+    cleanup.append(r)
+    assert r.run_queue([Topic("사고", "A")]) == {"done": 0, "failed": 1, "left": 0}
+    q = load_queue(tmp_path / "queue.json")
+    assert "너무 짧음" in next(iter(q.values()))["error"]
