@@ -64,6 +64,11 @@ LIT_TEMPLATE = """
 - 마지막에 '연구 공백(아직 안 된 것)'과 '이 주제의 차별점 후보'를 따로 정리한다."""
 
 
+def _fmt_dur(seconds: float) -> str:
+    s = max(0, int(round(seconds)))
+    return f"{s // 3600}시간 {s % 3600 // 60}분 {s % 60}초" if s >= 3600 else f"{s // 60}분 {s % 60}초"
+
+
 class TopicError(ValueError):
     """주제 목록 형식 오류."""
 
@@ -129,7 +134,9 @@ class ResearchConfig:
     """시간 단위 [s]. interval_s: 주제 사이 고정 간격 (직전 연구가 끝난 시각 기준)."""
 
     interval_s: float = 12 * 60.0
-    plan_timeout_s: float = 60 * 60.0     # '연구 시작' 버튼 대기 (5분 → 60분: 5분 만에 실패 판정된 경험, 사용자 요청)
+    # '연구 시작' 버튼 대기. 0 = 제한 없음 (사용자 요청: 60분으로도 안 나온 경우가 있어 제한을 없애고 시간을 측정)
+    plan_timeout_s: float = 0.0
+    plan_note_s: float = 5 * 60.0          # 계획을 기다리는 동안 경과 시간 표시 간격
     research_timeout_s: float = 180 * 60.0
     stable_s: float = 120.0          # 중지 버튼이 없고 보고서가 이만큼 그대로면 완료
     done_stable_s: float = 15.0      # '내보내기' 버튼이 보이면 이만큼만 그대로여도 완료
@@ -166,6 +173,7 @@ class ResearchRunner:
         self._sleep, self._clock, self._now = sleep, clock, now
         self.sel = load_research_selectors(cfg.selectors_file)
         self.ctx: Any = None
+        self.last_research_s = 0.0
 
     # -------------------------------------------------------------- 공통 도우미
 
@@ -282,8 +290,11 @@ class ResearchRunner:
             raise BackendError("'Deep Research' 항목을 찾을 수 없음 (이 모델에서 지원하지 않을 수 있음)")
         item.click()
 
-    def _wait_plan_and_start(self, page: Any, before: int) -> None:
-        deadline = self._clock() + self.cfg.plan_timeout_s
+    def _wait_plan_and_start(self, page: Any, before: int) -> float:
+        """'연구 시작' 버튼이 나올 때까지 기다렸다 누른다. 반환: 전송부터 버튼이 보일 때까지 걸린 시간 [s]."""
+        t0 = self._clock()
+        deadline = t0 + self.cfg.plan_timeout_s if self.cfg.plan_timeout_s > 0 else None
+        last_note = t0
         while True:
             self._check(page)
             if self.web._responses(page).count() > before:
@@ -292,15 +303,20 @@ class ResearchRunner:
                     raise UsageLimitReached(f"Deep Research 한도: {text[:200]}")
                 start = self._visible_text(page, self.sel["start_texts"], exact=True)
                 if start is not None:
+                    waited = self._clock() - t0
                     start.click()
-                    self.log("   '연구 시작'을 눌렀습니다. 보고서 완성까지 기다립니다.")
-                    return
-            if self._clock() > deadline:
+                    self.log(f"   연구 계획까지 {_fmt_dur(waited)} 걸림. '연구 시작'을 눌렀습니다. 보고서 완성까지 기다립니다.")
+                    return waited
+            now = self._clock()
+            if now - last_note >= self.cfg.plan_note_s:
+                last_note = now
+                self.log(f"   … 연구 계획 기다리는 중 ({_fmt_dur(now - t0)} 경과, q + Enter: 저장 후 종료)")
+            if deadline is not None and now > deadline:
                 raise BackendError(f"{self.cfg.plan_timeout_s / 60:.0f}분 안에 '연구 시작' 버튼이 나오지 않음")
             self._sleep(min(self.cfg.poll_s, 1.0))
 
     def _wait_report(self, page: Any) -> tuple[str, bool]:
-        """(보고서, 완료 여부). 시간 초과면 그때까지의 글자와 False."""
+        """(보고서, 완료 여부). 시간 초과면 그때까지의 글자와 False. 걸린 시간은 self.last_research_s 에 남긴다."""
         t0 = self._clock()
         deadline = t0 + self.cfg.research_timeout_s
         last, since, last_note = "", self._clock(), t0
@@ -314,11 +330,13 @@ class ResearchRunner:
             else:
                 done_btn = self._visible_text(page, self.sel["done_texts"]) is not None
                 if now - since >= (self.cfg.done_stable_s if done_btn else self.cfg.stable_s):
+                    self.last_research_s = now - t0
                     return text, True
             if now - last_note >= 10 * 60:
                 last_note = now
                 self.log(f"   … 연구 진행 중 ({(now - t0) / 60:.0f}분 경과, 현재 {len(text)}자)")
             if now > deadline:
+                self.last_research_s = now - t0
                 return text, False
             self._sleep(self.cfg.poll_s)
 
@@ -339,16 +357,21 @@ class ResearchRunner:
         send = self.web._first_visible(page, "send")
         (send.click() if send is not None and send.is_enabled() else box.press("Enter"))
         self.log(f"   주제 전송 ({topic.mode} + Deep Research). 연구 계획을 기다립니다…")
-        self._wait_plan_and_start(page, before)
+        plan_s = self._wait_plan_and_start(page, before)
         report, complete = self._wait_report(page)
         finished = self._now()
-        path = self._save_report(topic, report, complete, started, finished, page.url)
+        timing = {"plan_s": round(plan_s), "research_s": round(self.last_research_s),
+                  "total_s": round((finished - started).total_seconds())}
+        self.log(f"   소요: 계획 {_fmt_dur(timing['plan_s'])} / 연구 {_fmt_dur(timing['research_s'])} "
+                 f"/ 전체 {_fmt_dur(timing['total_s'])}")
+        path = self._save_report(topic, report, complete, started, finished, page.url, timing)
         return {"status": "done" if complete else "failed", "file": str(path), "chat_url": page.url,
                 "started": started.isoformat(timespec="seconds"), "finished": finished.isoformat(timespec="seconds"),
+                "timing": timing,
                 "chars": len(report), "error": "" if complete else f"{self.cfg.research_timeout_s / 60:.0f}분 초과 (부분 저장)"}
 
     def _save_report(self, topic: Topic, report: str, complete: bool, started: datetime, finished: datetime,
-                     url: str) -> Path:
+                     url: str, timing: dict | None = None) -> Path:
         self.cfg.out_dir.mkdir(parents=True, exist_ok=True)
         path = self.cfg.out_dir / f"{started:%Y%m%d_%H%M%S}_{slugify(topic.text)}.md"
         mins = (finished - started).total_seconds() / 60
@@ -356,6 +379,8 @@ class ResearchRunner:
                 f"- 모드: {topic.mode} + Deep Research",
                 f"- 시작: {started:%Y-%m-%d %H:%M:%S} / 종료: {finished:%Y-%m-%d %H:%M:%S} ({mins:.0f}분)",
                 f"- 상태: {'완료' if complete else '시간 초과 — 생성 중이던 부분까지만 저장'}",
+                *([f"- 소요: 계획 생성 {_fmt_dur(timing['plan_s'])} / 연구 {_fmt_dur(timing['research_s'])} "
+                   f"/ 전체 {_fmt_dur(timing['total_s'])}"] if timing else []),
                 f"- 채팅: {url}", "",
                 "_Gemini Deep Research 결과를 그대로 저장. 출처 링크와 '확인 필요' 표시를 직접 확인할 것._", "", "---", ""]
         write_atomic(path, "\n".join(head) + report.strip() + "\n")

@@ -247,13 +247,28 @@ def test_probe_topic_option():
     assert build_parser().parse_args(["--probe-topic", "다른 주제"]).probe_topic == "다른 주제"
 
 
-def test_plan_wait_is_60_minutes_and_other_waits_unchanged():
-    """사용자 요청: '연구 시작' 버튼 대기만 60분, 나머지(완료 판단 2분/15초, 최대 180분)는 그대로."""
+def test_plan_wait_unlimited_by_default_and_other_waits_unchanged():
+    """사용자 요청: '연구 시작' 버튼 대기 제한 없음(0), 나머지(완료 판단 2분/15초, 최대 180분)는 그대로."""
     rc = ResearchConfig()
-    assert rc.plan_timeout_s == 3600 and rc.stable_s == 120 and rc.done_stable_s == 15
+    assert rc.plan_timeout_s == 0 and rc.stable_s == 120 and rc.done_stable_s == 15
     assert rc.research_timeout_s == 180 * 60
     from council.research_cli import build_parser, configs
     _, cli = configs(build_parser().parse_args([]))
-    assert (cli.plan_timeout_s, cli.stable_s, cli.done_stable_s) == (3600, 120, 15)
+    assert (cli.plan_timeout_s, cli.stable_s, cli.done_stable_s) == (0, 120, 15)
     _, cli2 = configs(build_parser().parse_args(["--plan-minutes", "90"]))
     assert cli2.plan_timeout_s == 5400
+
+
+@needs_chrome
+def test_timing_recorded_and_unlimited_plan_wait(tmp_path, cleanup):
+    """계획이 늦게 나와도(제한 없음) 기다리고, 계획·연구·전체 소요 시간을 로그·대기열·보고서에 남긴다."""
+    r, logs = _runner(tmp_path, "plan=2500", plan_timeout_s=0, plan_note_s=1.0)
+    cleanup.append(r)
+    assert r.run_queue([Topic("사고", "시간 측정")]) == {"done": 1, "failed": 0, "left": 0}
+    q = load_queue(tmp_path / "queue.json")
+    timing = next(iter(q.values()))["timing"]
+    assert timing["plan_s"] >= 2 and timing["total_s"] >= timing["plan_s"] + timing["research_s"] - 1
+    assert any("연구 계획 기다리는 중" in m for m in logs)            # 대기 중 경과 표시
+    assert any("연구 계획까지" in m and "걸림" in m for m in logs)
+    md = next((tmp_path / "research").glob("*.md")).read_text(encoding="utf-8")
+    assert "- 소요: 계획 생성 " in md
