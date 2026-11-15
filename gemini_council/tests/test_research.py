@@ -423,3 +423,35 @@ def test_too_short_report_is_failed_not_done(tmp_path, cleanup):
     assert r.run_queue([Topic("사고", "A")]) == {"done": 0, "failed": 1, "left": 0}
     q = load_queue(tmp_path / "queue.json")
     assert "너무 짧음" in next(iter(q.values()))["error"]
+
+
+# ---------- 메뉴 늦게 펼쳐짐 (실제 2026-11-16 실패) · 실패 화면 저장 ----------
+
+@needs_chrome
+@pytest.mark.parametrize("delay", [800, 1500])
+def test_slow_menus_still_enable_deep_research(tmp_path, cleanup, delay):
+    """'+' / '도구 더보기' 메뉴가 늦게 펼쳐져도 끝까지 진행 (전에는 바로 찾아 '도구 더보기를 찾을 수 없음')."""
+    r, _ = _runner(tmp_path, f"menudelay={delay}")
+    cleanup.append(r)
+    assert r.run_queue([Topic("사고", "느린 메뉴")]) == {"done": 1, "failed": 0, "left": 0}
+
+
+@needs_chrome
+def test_failure_saves_screen_and_names(tmp_path, cleanup):
+    r, logs = _runner(tmp_path, "nomore=1")
+    cleanup.append(r)
+    r.MENU_WAIT_S = 1.0
+    assert r.run_queue([Topic("사고", "메뉴 안 열림")]) == {"done": 0, "failed": 1, "left": 0}
+    fail = next((tmp_path / "research").glob("fail_*"))
+    info = json.loads((fail / "failure.json").read_text(encoding="utf-8"))
+    assert (fail / "screen.png").stat().st_size > 0 and "도구 메뉴" in info["error"]
+    assert any("업로드" in (b["aria"] or "") for b in info["visible_buttons"])
+    assert "diagnostic_error" not in info and any("실패 화면 저장" in m for m in logs)
+
+
+@needs_chrome
+def test_limit_does_not_save_failure_screen(tmp_path, cleanup):
+    r, _ = _runner(tmp_path, "mode=limit_after_start")
+    cleanup.append(r)
+    r.run_queue([Topic("사고", "A")])
+    assert not list((tmp_path / "research").glob("fail_*"))

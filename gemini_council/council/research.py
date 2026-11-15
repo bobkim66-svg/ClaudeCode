@@ -71,6 +71,11 @@ LIT_TEMPLATE = """
 - 마지막에 '연구 공백(아직 안 된 것)'과 '이 주제의 차별점 후보'를 따로 정리한다."""
 
 
+_VISIBLE_NAMES_JS = """sel => Array.from(document.querySelectorAll(sel))
+  .filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; })
+  .map(e => ({text: (e.innerText || '').trim().slice(0, 60), aria: e.getAttribute('aria-label')}))"""
+
+
 def _fmt_dur(seconds: float) -> str:
     s = max(0, int(round(seconds)))
     return f"{s // 3600}시간 {s % 3600 // 60}분 {s % 60}초" if s >= 3600 else f"{s // 60}분 {s % 60}초"
@@ -210,8 +215,19 @@ class ResearchRunner:
                     return loc.nth(i)
         return None
 
-    def _menu_item(self, page: Any, texts: list[str]) -> Any | None:
-        """열린 메뉴의 항목. 접근성 역할(menuitem 등)로 먼저 찾아, 같은 글자가 들어간 다른 버튼(예: 모델 버튼
+    MENU_WAIT_S = 5.0  # 메뉴가 펼쳐지는 동안 기다림 (실제 2026-11-16: 클릭 직후 찾아 '도구 더보기'를 못 찾음)
+
+    def _menu_item(self, page: Any, texts: list[str], wait_s: float | None = None) -> Any | None:
+        """열린 메뉴의 항목. 메뉴가 펼쳐질 때까지 최대 wait_s [s] 동안 다시 찾는다."""
+        deadline = self._clock() + (self.MENU_WAIT_S if wait_s is None else wait_s)
+        while True:
+            item = self._menu_item_once(page, texts)
+            if item is not None or self._clock() >= deadline:
+                return item
+            self._sleep(0.25)
+
+    def _menu_item_once(self, page: Any, texts: list[str]) -> Any | None:
+        """접근성 역할(menuitem 등)로 먼저 찾아, 같은 글자가 들어간 다른 버튼(예: 모델 버튼
         'Hydrogen Thinking')을 다시 누르는 실수를 피한다. 못 찾으면 글자로 찾는다."""
         for role in ("menuitemradio", "menuitem", "menuitemcheckbox", "option"):
             for t in texts:
@@ -300,7 +316,11 @@ class ResearchRunner:
         if tools is None:
             raise BackendError("입력창 왼쪽 '+' 버튼을 찾을 수 없음 (--probe 로 화면 구조 확인)")
         tools.click()
-        item = self._menu_item(page, self.sel["deep_research_texts"])
+        # 먼저 '도구 더보기' 또는 'Deep Research' 중 하나가 보일 때까지 기다린다 (메뉴가 펼쳐졌는지 확인)
+        if self._menu_item(page, self.sel["more_tools_texts"] + self.sel["deep_research_texts"]) is None:
+            page.keyboard.press("Escape")
+            raise BackendError(f"'+' 를 눌렀지만 {self.MENU_WAIT_S:.0f}초 안에 도구 메뉴가 펼쳐지지 않음")
+        item = self._menu_item(page, self.sel["deep_research_texts"], wait_s=0)
         if item is None:  # 하위 메뉴 '도구 더보기' 안에 있음
             more = self._menu_item(page, self.sel["more_tools_texts"])
             if more is None:
@@ -368,8 +388,41 @@ class ResearchRunner:
             self._sleep(self.cfg.poll_s)
 
     def run_one(self, topic: Topic) -> dict:
-        """주제 하나를 끝까지 진행하고 결과 기록(dict)을 돌려준다. 차단·한도는 예외로 올린다."""
+        """주제 하나를 끝까지 진행하고 결과 기록(dict)을 돌려준다. 차단·한도는 예외로 올린다.
+        한도·q 외의 오류면 그 순간의 화면·메뉴/버튼 목록을 research/fail_*/ 에 남긴다 (무인 실행 원인 확인용)."""
         page = self.ctx.new_page()
+        try:
+            return self._run_one(page, topic)
+        except (UsageLimitReached, UserAbort):
+            raise
+        except BackendError as e:
+            self._save_failure(page, topic, e)
+            raise
+
+    def _save_failure(self, page: Any, topic: Topic, err: Exception) -> None:
+        folder = self.cfg.out_dir / f"fail_{self._now():%Y%m%d_%H%M%S}_{slugify(topic.text, 20)}"
+        info: dict[str, Any] = {"time": self._now().isoformat(timespec="seconds"), "topic": topic.text,
+                                "mode": topic.mode, "error": f"{type(err).__name__}: {err}"}
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            info["url"] = page.url
+            page.screenshot(path=str(folder / "screen.png"))
+            # 보이는 메뉴 항목·버튼 이름 (selector 를 고칠 때 실제 글자를 확인하기 위함)
+            info["visible_menu_items"] = page.evaluate(_VISIBLE_NAMES_JS, "[role^=menuitem],[role=option]")[:60]
+            info["visible_buttons"] = page.evaluate(_VISIBLE_NAMES_JS, "button,[role=button]")[:80]
+            resp = self.web._responses(page)
+            if resp.count():
+                info["last_response_text"] = resp.last.inner_text()[:3000]
+        except Exception as e:  # noqa: BLE001 — 진단 저장 실패가 원래 오류를 가리지 않게 기록만 한다
+            info["diagnostic_error"] = f"{type(e).__name__}: {e}"
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            write_atomic(folder / "failure.json", json.dumps(info, ensure_ascii=False, indent=2))
+            self.log(f"   실패 화면 저장: {folder}")
+        except OSError as e:
+            self.log(f"   실패 화면 저장 못함: {e}")
+
+    def _run_one(self, page: Any, topic: Topic) -> dict:
         page.goto(self.web.cfg.new_chat_url, timeout=self.web.cfg.page_load_timeout_s * 1000)
         self.web._tabs = {self.ROLE.key: 1}
         self.web._wait_ready(page, self.ROLE)

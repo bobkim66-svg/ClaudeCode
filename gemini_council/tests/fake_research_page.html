@@ -14,7 +14,8 @@
   실제 화면(2026-11 사용자 캡처)의 흐름을 흉내 낸 테스트 페이지:
     입력창 왼쪽 '+' → '도구 더보기' → 'Deep Research', 오른쪽 모델 버튼('Hydrogen Thinking ⌄')
     → 질문 전송 → 연구 계획 + '연구 시작' 버튼 → 긴 보고서 생성(중지 버튼) → 완료 시 'Docs로 내보내기'
-  쿼리: mode=normal|captcha|limit|limit_after_start|short|noplan|hang|logout, gen=보고서 조각 간격 ms(기본 40), plan=계획 지연 ms
+  쿼리: mode=normal|captcha|limit|limit_after_start|short|noplan|hang|logout, gen=보고서 조각 간격 ms(기본 40), plan=계획 지연 ms,
+        menudelay=메뉴 펼침 지연 ms, nomore=1 도구 메뉴 안 열림
 -->
 <div id="chat"></div>
 <div id="composer">
@@ -45,6 +46,8 @@ const q = new URLSearchParams(location.search);
 const mode = q.get("mode") || "normal";
 const gen = parseInt(q.get("gen") || "40", 10);
 const planDelay = parseInt(q.get("plan") || "300", 10);
+const menuDelay = parseInt(q.get("menudelay") || "0", 10);  // menudelay=: 메뉴가 늦게 펼쳐짐 [ms] (실제 실패 재현)
+const noMore = q.get("nomore") === "1";                     // nomore=1: '도구 더보기' 가 아예 없음
 // picker=div: 모델 선택이 <button> 이 아니라 aria 정보 없는 div 인 경우 (실제 화면 진단에서 button 규칙이 안 맞음)
 // picker=shadow: 모델 표시가 웹 컴포넌트(shadow DOM) 안에 있음, picker=late: 1.5 초 뒤에 나타남
 if (q.get("picker") === "shadow" || q.get("picker") === "late") {
@@ -73,8 +76,8 @@ const send = document.querySelector(".send-button");
 const stop = document.querySelector(".stop-button");
 const hideMenus = () => ["tools-menu", "more-menu", "model-menu"].forEach(i => $(i).classList.add("hidden"));
 
-document.querySelector(".upload-button")?.addEventListener("click", () => { hideMenus(); $("tools-menu").classList.remove("hidden"); });
-$("more").addEventListener("click", () => $("more-menu").classList.remove("hidden"));
+document.querySelector(".upload-button")?.addEventListener("click", () => { hideMenus(); if (noMore) return; setTimeout(() => $("tools-menu").classList.remove("hidden"), menuDelay); });
+$("more").addEventListener("click", () => setTimeout(() => $("more-menu").classList.remove("hidden"), menuDelay));
 $("dr-item").addEventListener("click", () => {
   if ($("model-label").textContent === "Pro") { alert("Pro 에서는 Deep Research 를 쓸 수 없음"); return; }
   dr = true; $("chip").classList.remove("hidden"); hideMenus();
