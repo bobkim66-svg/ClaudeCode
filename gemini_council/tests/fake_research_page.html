@@ -112,7 +112,11 @@ function submit() {
     const start = document.createElement("button");
     start.textContent = "연구 시작";
     mr.appendChild(start);
-    start.addEventListener("click", () => { start.remove(); runResearch(prompt); });
+    start.addEventListener("click", () => {
+      start.disabled = true;  // 실제 화면: 버튼은 계획 카드에 남고, '연구 시작' 이 사용자 말풍선으로 추가됨
+      const uq2 = document.createElement("user-query"); uq2.textContent = "연구 시작"; $("chat").appendChild(uq2);
+      runResearch(prompt);
+    });
   }, planDelay);
 }
 
