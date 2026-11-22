@@ -90,3 +90,10 @@ jobs:
           path: gemini_council/dist/gemini_research.exe
           if-no-files-found: error
           retention-days: 30
+      - name: 보고서 Markdown exe 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemini-export-windows-exe
+          path: gemini_council/dist/gemini_export.exe
+          if-no-files-found: error
+          retention-days: 30

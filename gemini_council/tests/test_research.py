@@ -105,6 +105,7 @@ def test_queue_runs_topics_end_to_end(tmp_path, cleanup):
     assert len(files) == 2 and all(q[t.key]["status"] == "done" for t in topics)
     text = files[0].read_text(encoding="utf-8")
     assert "선행연구 대조표" in text and "가짜 보고서 끝 ✓" in text and "모드: " in text
+    assert "**강조 끝** [출처](https://example.org/r)" in text   # 제목·굵게·링크를 살린 Markdown 으로 저장
     assert any("[1/2]" in m for m in logs) and any("연구 시작" in m for m in logs)
     # 두 번째 실행: 모두 완료됐으므로 아무것도 하지 않음
     r2, _ = _runner(tmp_path)

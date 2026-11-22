@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from .backends.base import BackendError, UsageLimitReached, UserAbort
 from .backends.gemini_web import GeminiWebBackend, WebConfig
+from .export_md import element_markdown, report_root
 from .quota import QuotaLog
 from .roles import Role
 from .session import write_atomic
@@ -252,6 +253,14 @@ class ResearchRunner:
             return text
         return None
 
+    def _report_markdown(self, page: Any) -> str:
+        try:
+            root, _ = report_root(page, self.sel["report"], self.web.sel["response_container"])
+            return element_markdown(root)[0].strip() if root is not None else ""
+        except Exception as e:  # noqa: BLE001 — 변환 실패가 보고서 저장을 막지 않게 (글자로 저장)
+            self.log(f"   Markdown 변환 실패, 화면 글자로 저장: {type(e).__name__}: {e}")
+            return ""
+
     def _report_text(self, page: Any) -> str:
         loc = self._visible(page, self.sel["report"])
         if loc is not None:
@@ -441,6 +450,9 @@ class ResearchRunner:
         plan_s = self._wait_plan_and_start(page, before)
         self.quota.add(self._now().astimezone(), "start_clicked", topic.text, plan_s=round(plan_s))
         report, complete = self._wait_report(page)
+        md = self._report_markdown(page)  # 제목·표·링크를 살린 Markdown (실패하면 화면 글자 그대로)
+        if md and complete:
+            report = md
         finished = self._now()
         error = "" if complete else f"시간 초과 ({self.cfg.research_timeout_s / 60:.0f}분)"
         if complete and len(report) < self.cfg.min_report_chars:

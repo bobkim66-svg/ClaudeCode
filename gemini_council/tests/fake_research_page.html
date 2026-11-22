@@ -143,6 +143,7 @@ function runResearch(prompt) {
     i = Math.min(full.length, i + 25);
     rep.innerText = full.slice(0, i);
     if (i < full.length) { setTimeout(step, gen); return; }
+    rep.insertAdjacentHTML("beforeend", "<p><strong>강조 끝</strong> <a href='https://example.org/r'>출처</a></p>");
     stop.classList.add("hidden"); send.classList.remove("hidden");
     mr.querySelector(".markdown").innerText = "조사를 완료했습니다.";
     const exp = document.createElement("button"); exp.textContent = "Docs로 내보내기"; panel.appendChild(exp);

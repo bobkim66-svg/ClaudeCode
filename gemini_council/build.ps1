@@ -44,7 +44,13 @@ Invoke-Checked "PyInstaller 빌드 (Deep Research 대기열 exe)" {
         --collect-all playwright `
         --distpath dist --workpath build --specpath build run_research.py
 }
+Invoke-Checked "PyInstaller 빌드 (보고서 → Markdown 저장 exe)" {
+    & $py -m PyInstaller --noconfirm --onefile --console --name gemini_export `
+        --collect-all playwright `
+        --distpath dist --workpath build --specpath build run_export.py
+}
 $researchExe = Join-Path $PSScriptRoot "dist\gemini_research.exe"
+$exportExe = Join-Path $PSScriptRoot "dist\gemini_export.exe"
 $exe = Join-Path $PSScriptRoot "dist\gemini_council.exe"
 
 # ---- exe 단독 실행 점검: 소스 트리와 분리된 임시 폴더에서 실행 ----
@@ -102,6 +108,28 @@ try {
             if ((Get-Content $r.FullName -Raw -Encoding UTF8) -notmatch "가짜 보고서 끝") { throw "보고서 내용 이상: $($r.Name)" }
         }
         Write-Host "Deep Research 보고서 확인: $($reports.Name -join ', ')" -ForegroundColor Green
+    } finally {
+        Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
+            Where-Object { $_.CommandLine -like "*$webProfile*" } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+
+    # 보고서 → Markdown exe: 전용 Chrome 을 직접 띄워 가짜 보고서 화면을 열고, 그 탭을 .md 로 저장
+    Copy-Item $exportExe $clean
+    $cleanExport = Join-Path $clean "gemini_export.exe"
+    $fakeReport = ([System.Uri](Join-Path $PSScriptRoot "tests\fake_report_page.html")).AbsoluteUri
+    try {
+        Invoke-Checked "보고서 Markdown exe 점검" {
+            & $cleanExport --once --web-url $fakeReport --url-contains fake_report_page --chrome-arg=--headless=new `
+                --profile-dir $webProfile --port 9413 --out-dir "md 저장"
+        }
+        $saved = Get-ChildItem -Path (Join-Path $clean "md 저장") -Filter "*.md"
+        if ($saved.Count -ne 1) { throw "저장된 .md 가 1개가 아님: $($saved.Count)" }
+        $stext = Get-Content $saved[0].FullName -Raw -Encoding UTF8
+        if ($stext -notmatch "\| Kim 2024 \|" -or $stext -notmatch "\*\*동시에 열화\*\*" -or $stext -notmatch "가짜 보고서 끝") {
+            throw "Markdown 내용 이상: $($saved[0].Name)"
+        }
+        Write-Host "보고서 Markdown 확인: $($saved[0].Name)" -ForegroundColor Green
     } finally {
         Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
             Where-Object { $_.CommandLine -like "*$webProfile*" } |

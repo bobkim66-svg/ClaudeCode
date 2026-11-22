@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>IR 보고서 - Gemini</title>
+<style>.hidden { display: none; } deep-research-immersive-panel { display: block; }</style>
+</head>
+<body>
+<!--
+  gemini_export 시험용 가짜 화면: 채팅(연구 계획) + Deep Research 보고서 패널.
+  쿼리: gen=1 → 생성 중(중지 버튼 보임), panel=0 → 패널 없이 채팅 답변만, title=… → 보고서 제목
+-->
+<div id="chat">
+  <user-query>IR 기반 로컬 플래닝 조사</user-query>
+  <model-response><message-content><div class="markdown">연구 계획을 짜봤어요. <b>계획</b> 요약</div></message-content></model-response>
+  <user-query>연구 시작</user-query>
+  <model-response><message-content><div class="markdown">조사를 완료했습니다. 보고서를 확인하세요.</div></message-content></model-response>
+</div>
+<button class="stop-button hidden" aria-label="대답 생성 중지">■</button>
+<deep-research-immersive-panel id="panel">
+  <div class="toolbar"><button>공유 및 내보내기</button><mat-icon class="google-symbols">more_vert</mat-icon></div>
+  <div class="markdown">
+    <h1 id="title">IR 기반 로컬 플래닝 전환·복구</h1>
+    <p>RGB·LiDAR 가 <strong>동시에 열화</strong>되면 <em>열화상(LWIR)</em> 채널이 유효하다<sup><a href="https://example.org/src1">1</a></sup>.
+       자세한 내용은 <a href="https://example.org/paper?id=2">원 논문</a> 참고.</p>
+    <span class="hidden">숨겨진 글자 — 저장되면 안 됨</span>
+    <h2>1. 선행연구 대조표</h2>
+    <table>
+      <thead><tr><th>연구</th><th>방법</th><th>한계</th></tr></thead>
+      <tbody>
+        <tr><td>Kim 2024</td><td>LWIR|LiDAR 융합</td><td>연기 <b>밀도</b> 높을 때<br>성능 저하</td></tr>
+        <tr><td>Lee 2025</td><td>신뢰도 벡터</td><td>-</td></tr>
+      </tbody>
+    </table>
+    <h2>2. 연구 공백</h2>
+    <ul>
+      <li>로컬 플래너 수준의 센서 신뢰도 활용
+        <ul><li>전환 기준 미정립</li></ul>
+      </li>
+      <li>복구(fallback) 정책 비교 부족</li>
+    </ul>
+    <ol><li>첫 단계</li><li>둘째 단계</li></ol>
+    <pre><code>reliability = w_ir * r_ir + w_rgb * r_rgb</code></pre>
+    <blockquote><p>확인 필요: 수치는 원문 대조</p></blockquote>
+    <h2>참고 자료</h2>
+    <ol class="sources"><li><a href="https://example.org/src1">Thermal odometry survey</a></li></ol>
+    <p>가짜 보고서 끝 ✓</p>
+  </div>
+</deep-research-immersive-panel>
+<script>
+const q = new URLSearchParams(location.search);
+if (q.get("gen") === "1") document.querySelector(".stop-button").classList.remove("hidden");
+if (q.get("panel") === "0") document.getElementById("panel").remove();
+if (q.get("title")) document.getElementById("title").textContent = q.get("title");
+</script>
+</body>
+</html>
